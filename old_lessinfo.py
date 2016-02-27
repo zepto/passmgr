@@ -49,9 +49,23 @@ os_environ['LESSHISTFILE'] = '/dev/null'
 # Use less as the pager.
 os_environ['PAGER'] = '$(which less)'
 
-# Set the salt, iv, and key length
-KEY_LEN = SALT_LEN = AES.key_size[-1]
+# Set the salt length
+SALT_LEN = AES.key_size[-1]
+
+KEY_LEN = AES.key_size[-1]
+
 IV_LEN = AES.block_size
+
+
+def key_gen(key: bytes, salt: bytes, dkLen: int = KEY_LEN,
+            iterations: int = 5000) -> bytes:
+    """ Return a PBKDF2 key generated form the key and salt using HMAC-SHA512.
+
+    """
+
+    # Use SHA512 as the hash method in hmac.
+    prf = lambda p, s: HMAC.new(p, s, SHA512).digest()
+    return PBKDF2(key, salt, dkLen=dkLen, count=iterations, prf=prf)
 
 
 def PKCS7_pad(data: bytes, multiple: int) -> bytes:
@@ -66,69 +80,80 @@ def PKCS7_pad(data: bytes, multiple: int) -> bytes:
     return data + bytes([pad_len]) * pad_len
 
 
-def simple_encrypt(data: bytes, key: bytes) -> bytes:
+def simple_encrypt(data: bytes, aes_key: bytes) -> bytes:
     """ Returns the AES_CBC encryption of data using key.
-    The return value is the concatenation of iv + ciphertext.
 
     """
 
     iv = Random.new().read(IV_LEN)
-    encrypt_obj = AES.new(key, AES.MODE_CBC, iv)
+    encrypt_obj = AES.new(aes_key, AES.MODE_CBC, iv)
 
     # Put the salt and iv at the start of the ciphertext so when it
     # needs to be decrypted the same salt and iv can be used.
     return iv + encrypt_obj.encrypt(data)
 
 
-def simple_decrypt(data: bytes, key: bytes) -> bytes:
-    """ Decrypts data using key.  The data should be the concatenation of
-    iv + ciphertext.
-
-    """
-
-    iv = data[:IV_LEN]
-    decrypt_obj = AES.new(key, AES.MODE_CBC, iv)
-
-    # Decrypt the aes key.
-    return decrypt_obj.decrypt(data[IV_LEN:])
-
-
-def verify(ciphertext: bytes, key: bytes) -> bytes:
+def verify(ciphertext: bytes, aes_key: bytes) -> bytes:
     """ Raises an error if the ciphertext isn't valid.
 
     """
 
-    # Extract the hmac digest and encrypted hmac key from the
-    # ciphertext
-    hmac_digest = ciphertext[-SHA512.digest_size:]
-    ciphertext = ciphertext[:-SHA512.digest_size]
-    encrypted_hmac_key = ciphertext[-(IV_LEN + KEY_LEN):]
-    ciphertext = ciphertext[:-(IV_LEN + KEY_LEN)]
+    # Split the cipher text into the encrypted hmac key, the hmac
+    # digest, and the original iv + ciphertext.
+    encrypted_hmac_key, hmac_digest, ciphertext = extract_hmac_data(ciphertext)
 
     # Decrypt hmac key.
-    hmac_key = simple_decrypt(encrypted_hmac_key, key)
+    hmac_iv = encrypted_hmac_key[:IV_LEN]
+    hmac_decrypt_obj = AES.new(aes_key, AES.MODE_CBC, hmac_iv)
+    hmac_key = hmac_decrypt_obj.decrypt(encrypted_hmac_key[IV_LEN:])
+
+    # Re-generate the hmac digest of ciphertext.
+    hmac = HMAC.new(hmac_key, digestmod=SHA512)
+    hmac.update(ciphertext)
 
     # Test the generated digest against the stored digest and fail if they
     # are different.
-    assert(hmac_digest == get_hmac_digest(ciphertext, hmac_key))
+    assert(hmac_digest == hmac.digest())
 
     # Only return the ciphertext to be decrypted if the digests match.
     return ciphertext
 
 
-def get_hmac_digest(data: bytes, key: bytes) -> bytes:
-    """ Returns the hmac digest of data using key.
+def hmac(ciphertext: bytes, key: bytes) -> tuple:
+    """ Generates an hmac digest of ciphertext and encryptes the key using
+    key.  The encrypted key and digest are returned as a tuple.
 
     """
 
-    # Re-generate the hmac digest of ciphertext.
-    hmac = HMAC.new(key, digestmod=SHA512)
-    hmac.update(data)
+    # Generate the largest key we can use.
+    hmac_key = Random.new().read(KEY_LEN)
 
-    return hmac.digest()
+    # Create the hmac digest.
+    hmac = HMAC.new(hmac_key, digestmod=SHA512)
+    hmac.update(ciphertext)
+    hmac_digest = hmac.digest()
+
+    # Encrypt the hmac key and return the result with the digest
+    # concatenated on the end.
+    return simple_encrypt(hmac_key, key) + hmac_digest
 
 
-def encrypt(key: bytes, plaintext: str) -> bytes:
+def extract_hmac_data(ciphertext: bytes) -> tuple:
+    """ Gets the hmac_digest and encrypted hmac key out of the ciphertext and
+    returns all three.
+
+    """
+
+    hmac_digest = ciphertext[-SHA512.digest_size:]
+    ciphertext = ciphertext[:-SHA512.digest_size]
+
+    encrypted_hmac_key = ciphertext[-(IV_LEN + KEY_LEN):]
+    ciphertext = ciphertext[:-(IV_LEN + KEY_LEN)]
+
+    return (encrypted_hmac_key, hmac_digest, ciphertext)
+
+
+def encrypt_hmac_key(aes_key: bytes, plaintext: str) -> bytes:
     """ encrypt(key, plaintext) ->  Encrypts plaintext using key.
 
     """
@@ -137,30 +162,168 @@ def encrypt(key: bytes, plaintext: str) -> bytes:
     padded_plaintext = PKCS7_pad(plaintext.encode(), AES.block_size)
 
     # Encrypt it.
-    ciphertext = simple_encrypt(padded_plaintext, key)
+    ciphertext = simple_encrypt(padded_plaintext, aes_key)
 
     # Generate an hmac of the ciphertext, and put the encrypted key and
     # digest at the end of the ciphertext.
-
-    # Generate the largest key we can use.
-    hmac_key = Random.new().read(KEY_LEN)
-
-    hmac_digest = get_hmac_digest(ciphertext, hmac_key)
-
-    return ciphertext + simple_encrypt(hmac_key, key) + hmac_digest
+    return ciphertext + hmac(ciphertext, aes_key)
 
 
-def decrypt(key: bytes, ciphertext: bytes) -> str:
+def decrypt_hmac_key(aes_key: bytes, ciphertext: bytes) -> str:
     """ decrypt(key, ciphertext) -> Decrypts the ciphertext using the key.
 
     """
 
-    ciphertext = verify(ciphertext, key)
+    ciphertext = verify(ciphertext, aes_key)
 
-    padded_plaintext = simple_decrypt(ciphertext, key)
+    iv = ciphertext[:IV_LEN]
+    ciphertext = ciphertext[IV_LEN:]
+
+    decrypt_obj = AES.new(aes_key, AES.MODE_CBC, iv)
+    padded_plaintext = decrypt_obj.decrypt(ciphertext)
 
     # Remove the padding from the plaintext, and return the result.
     return padded_plaintext[:-padded_plaintext[-1]].decode()
+
+
+def get_data_hmac(ciphertext: bytes) -> tuple:
+    """ Breaks the ciphertext up into its components and returns a tuple of the
+    result.
+
+    """
+
+    encrypted_hmac_key = ciphertext[:IV_LEN + KEY_LEN]
+    ciphertext = ciphertext[IV_LEN + KEY_LEN:]
+
+    hmac_digest = ciphertext[:SHA512.digest_size]
+    ciphertext = ciphertext[SHA512.digest_size:]
+
+    salt = ciphertext[:SALT_LEN]
+    ciphertext = ciphertext[SALT_LEN:]
+
+    iv = ciphertext[:IV_LEN]
+    ciphertext = ciphertext[IV_LEN:]
+
+    return (encrypted_hmac_key, hmac_digest, salt, iv, ciphertext)
+
+
+def encrypt_hmac(key: bytes, plaintext: str) -> bytes:
+    """ encrypt(key, plaintext) ->  Encrypts plaintext using key.
+
+    """
+
+    # Generate a key from a salt and hashed key.
+    salt = Random.new().read(SALT_LEN)
+    valid_key = key_gen(key, salt)
+
+    iv = Random.new().read(IV_LEN)
+
+    padded_plaintext = PKCS7_pad(plaintext.encode(), AES.block_size)
+
+    encrypt_obj = AES.new(valid_key, AES.MODE_CBC, iv)
+
+    # Put the salt and iv at the start of the ciphertext so when it
+    # needs to be decrypted the same salt and iv can be used.
+    ciphertext = salt + iv + encrypt_obj.encrypt(padded_plaintext)
+
+    hmac_key = Random.new().read(32)
+    hmac = HMAC.new(hmac_key, digestmod=SHA512)
+    hmac.update(ciphertext)
+    hmac_digest = hmac.digest()
+
+    # Encrypt the hmac key
+    hmac_iv = Random.new().read(IV_LEN)
+    hmac_encrypt_obj = AES.new(valid_key, AES.MODE_CBC, hmac_iv)
+    encrypted_hmac_key = hmac_iv + hmac_encrypt_obj.encrypt(hmac_key)
+
+    # ciphertext = encrypted hmac key + hmac digest + salt + iv +
+    # encrypted data.
+    ciphertext = encrypted_hmac_key + hmac_digest + ciphertext
+
+    return ciphertext
+
+
+def decrypt_hmac(key: bytes, ciphertext: bytes) -> str:
+    """ decrypt(key, ciphertext) -> Decrypts the ciphertext using the key.
+
+    """
+
+    encrypted_hmac_key, hmac_digest, salt, iv, real_ciphertext = get_data_hmac(ciphertext)
+
+    # Re-generate the key from the salt.
+    valid_key = key_gen(key, salt)
+
+    hmac_iv = encrypted_hmac_key[:IV_LEN]
+    hmac_decrypt_obj = AES.new(valid_key, AES.MODE_CBC, hmac_iv)
+    hmac_key = hmac_decrypt_obj.decrypt(encrypted_hmac_key[IV_LEN:])
+
+    hmac = HMAC.new(hmac_key, digestmod=SHA512)
+    hmac.update(salt + iv + real_ciphertext)
+    assert(hmac.digest() == hmac_digest)
+
+    decrypt_obj = AES.new(valid_key, AES.MODE_CBC, iv)
+    padded_plaintext = decrypt_obj.decrypt(real_ciphertext)
+
+    try:
+        # Remove the padding from the plaintext.
+        plaintext = padded_plaintext[:-padded_plaintext[-1]].decode()
+    except UnicodeDecodeError:
+        print("There was an error.  Maybe the wrong password was given.")
+        return ''
+
+    return plaintext
+
+
+def encrypt_pbkdf2(key: bytes, plaintext: str) -> bytes:
+    """ encrypt(key, plaintext) ->  Encrypts plaintext using key.
+
+    """
+
+    # Generate a key from a salt and hashed key.
+    salt = Random.new().read(SALT_LEN)
+    valid_key = key_gen(key, salt)
+
+    iv = Random.new().read(IV_LEN)
+
+    padded_plaintext = PKCS7_pad(plaintext.encode(), AES.block_size)
+
+    encrypt_obj = AES.new(valid_key, AES.MODE_CBC, iv)
+
+    # Put the salt and iv at the start of the ciphertext so when it
+    # needs to be decrypted the same salt and iv can be used.
+    ciphertext = salt + iv + encrypt_obj.encrypt(padded_plaintext)
+
+    return ciphertext
+
+
+def decrypt_pbkdf2(key: bytes, ciphertext: bytes) -> str:
+    """ decrypt(key, ciphertext) -> Decrypts the ciphertext using the key.
+
+    """
+
+    # The salt is the first SALT_LEN bytes at the start of the
+    # ciphertext.
+    salt = ciphertext[:SALT_LEN]
+
+    # Re-generate the key from the salt.
+    valid_key = key_gen(key, salt)
+
+    # The iv is the first block_size of data, after the salt, at the start
+    # of the cyptertext.
+    iv = ciphertext[SALT_LEN:SALT_LEN + IV_LEN]
+    real_ciphertext = ciphertext[SALT_LEN + IV_LEN:]
+
+    decrypt_obj = AES.new(valid_key, AES.MODE_CBC, iv)
+    padded_plaintext = decrypt_obj.decrypt(real_ciphertext)
+
+    try:
+        # Remove the padding from the plaintext.
+        plaintext = padded_plaintext[:-padded_plaintext[-1]].decode()
+    except UnicodeDecodeError:
+        print("There was an error.  Maybe the wrong password was given.")
+        return ''
+
+    return plaintext
 
 
 def encrypt_sha256(key: bytes, plaintext: str) -> bytes:
@@ -250,7 +413,7 @@ def write_file(filename: str, accounts_dict: dict):
 
 
 
-def crypt_to_dict(crypt_data: str, key: bytes) -> dict:
+def crypt_to_dict_key(crypt_data: str, aes_key: bytes) -> dict:
     """ Decrypts crypt_data and returns the json.loads dictionary.
     If skip_invalid is True then skip decryption of data if the password is
     invalid.
@@ -258,14 +421,14 @@ def crypt_to_dict(crypt_data: str, key: bytes) -> dict:
     """
 
     # Convert the data to a bytes object and decrypt it.
-    json_data = decrypt(key, str_to_bytes(crypt_data))
+    json_data = decrypt_hmac_key(aes_key, str_to_bytes(crypt_data))
 
     # Load the decrypted data with json and return the resulting
     # dictionary.
     return json_loads(json_data)
 
 
-def dict_to_crypt(data_dict: dict, key: bytes) -> str:
+def dict_to_crypt_key(data_dict: dict, aes_key: bytes) -> str:
     """ Returns the encrypted json dump of data_dict.
 
     """
@@ -273,13 +436,13 @@ def dict_to_crypt(data_dict: dict, key: bytes) -> str:
     # Dump the data_dict into json data.
     json_data = json_dumps(data_dict)
 
-    ciphertext = encrypt(key, json_data)
+    ciphertext = encrypt_hmac_key(aes_key, json_data)
 
     # Return the string encoded encrypted json dump.
     return bytes_to_str(ciphertext)
 
 
-def crypt_to_dict_sha256(crypt_data: str, password: str = '',
+def crypt_to_dict(crypt_data: str, password: str = '',
                   skip_invalid: bool = True) -> dict:
     """ Decrypts crypt_data and returns the json.loads dictionary.
     If skip_invalid is True then skip decryption of data if the password is
@@ -310,7 +473,7 @@ def crypt_to_dict_sha256(crypt_data: str, password: str = '',
                 continue
 
 
-def dict_to_crypt_sha256(data_dict: dict, password: str = '') -> str:
+def dict_to_crypt(data_dict: dict, password: str = '') -> str:
     """ Returns the encrypted json dump of data_dict.
 
     """
@@ -324,7 +487,7 @@ def dict_to_crypt_sha256(data_dict: dict, password: str = '') -> str:
         password = get_pass('password for encryption')
 
     # Return the string encoded encrypted json dump.
-    return bytes_to_str(encrypt_sha256(password, json_data))
+    return bytes_to_str(encrypt_hmac(password, json_data))
 
 
 def dict_to_str(data_dict: dict) -> str:
@@ -373,88 +536,63 @@ def get_pass(question_str: str, verify: bool = True) -> str:
     return a1
 
 
-def gen_keys(password: str, salt: bytes, dkLen: int = KEY_LEN,
-                  iterations: int = 5000) -> tuple:
-    """ Uses a password and PBKDF2 to generate 512-bits of key material.  Then
-    it splits it, and returns a tuple of the first 256-bit for a key, and the
-    second 256-bit block for a verification code.
+def gen_split_key(password: str, salt: bytes) -> tuple:
+    """ Generate 512-bits of key material and return a tuple of a 256-bit key
+    and 256-bit verification code.
 
     """
 
-    # Use SHA512 as the hash method in hmac.
-    prf = lambda p, s: HMAC.new(p, s, SHA512).digest()
-    key_mat = PBKDF2(password.encode(), salt, dkLen=dkLen, count=iterations,
-                     prf=prf)
+    # Generate the 512-bit key material.
+    key_mat_len = 2 * KEY_LEN
+    key_mat = key_gen(password.encode(), salt, dkLen=key_mat_len)
     # The encryption key is the first 256-bits of material.
-    crypt_key = key_mat[:KEY_LEN]
+    enc_key = key_mat[:KEY_LEN]
     # The second 256-bits is used to verify the key and password.
-    auth_key = key_mat[KEY_LEN:]
+    key_mac = key_mat[KEY_LEN:]
 
-    return crypt_key, auth_key
+    return enc_key, key_mac
 
 
-def get_master_key(encrypted_key: bytes = b'') -> tuple:
-    """ Decrypt or create a aes key.  Returns both the encrypted key and
-    decrypted key.
+def get_aes_key(aes_key_enc: bytes = b'') -> tuple:
+    """ Decrypt or create a aes key.
 
     """
 
-    if not encrypted_key:
-        # Get the password to encrypt the master key.
+    if not aes_key_enc:
+        # Get the password to encrypt the data.
         password = get_pass('password for encryption')
 
         # Generate the largest key possible.
-        key = Random.new().read(KEY_LEN)
+        aes_key = Random.new().read(KEY_LEN)
 
-        # Encrypt the key.
-        encrypted_key = encrypt_key(key, password)
+        # Generate a large salt.
+        salt = Random.new().read(SALT_LEN)
+
+        # Generate a key and verification key from the password and
+        # salt.
+        enc_key, key_mac = gen_split_key(password, salt)
+
+        aes_key_enc = salt + simple_encrypt(aes_key, enc_key) + key_mac
     else:
-        # Get the password to decrypt the key.
         password = get_pass('password for decryption', verify=False)
 
-        # Verify that the password is correct and/or the file has not
-        # been tampered with.
-        crypt_key = verify_key(encrypted_key, password)
+        # Get the salt and iv from the start of the encrypted data.
+        salt = aes_key_enc[:SALT_LEN]
+        iv = aes_key_enc[SALT_LEN:IV_LEN + SALT_LEN]
 
-        # Decrypt the key.
-        key = simple_decrypt(encrypted_key[SALT_LEN:-KEY_LEN], crypt_key)
+        # Generate a key and verification key from the password and
+        # salt.
+        enc_key, key_mac = gen_split_key(password, salt)
 
-    return encrypted_key, key
+        if key_mac != aes_key_enc[-KEY_LEN:]:
+            raise(Exception("Invalid password or file was tampered with."))
 
+        encrypt_obj = AES.new(enc_key, AES.MODE_CBC, iv)
 
-def encrypt_key(key: bytes, password: str) -> bytes:
-    """ Converts password into a valid key and uses that to encrypt key
-    returning the result.
+        # Decrypt the aes key.
+        aes_key = encrypt_obj.decrypt(aes_key_enc[SALT_LEN + IV_LEN:-KEY_LEN])
 
-    """
-
-    # Generate a large salt.
-    salt = Random.new().read(SALT_LEN)
-
-    # Generate a key and verification key from the password and
-    # salt.
-    crypt_key, auth_key = gen_keys(password, salt, dkLen = KEY_LEN * 2)
-
-    return salt + simple_encrypt(key, crypt_key) + auth_key
-
-
-def verify_key(crypted_key: bytes, password: bytes) -> bytes:
-    """ Verifies that password can decrypt crypted_key, and returns the key
-    generated from password that will decrypt crypted_key.
-
-    """
-
-    # Get the salt and iv from the start of the encrypted data.
-    salt = crypted_key[:SALT_LEN]
-
-    # Generate a key and verification key from the password and
-    # salt.
-    crypt_key, auth_key = gen_keys(password, salt, dkLen = KEY_LEN * 2)
-
-    if auth_key != crypted_key[-KEY_LEN:]:
-        raise(Exception("Invalid password or file was tampered with."))
-
-    return crypt_key
+    return aes_key_enc, aes_key
 
 
 def main(args: dict) -> int:
@@ -509,45 +647,36 @@ def main(args: dict) -> int:
     # Load the json data into a dictionary.
     accounts_dict = json_loads(json_data)
 
-    master_key_digest = bytes_to_str(SHA512.new(b'\x00master_key\x00').digest())
-    encrypted_key = str_to_bytes(accounts_dict.pop(master_key_digest, ''))
-    encrypted_key, master_key = get_master_key(encrypted_key)
-
-    # Change the password.
-    if args.get('new_password', False):
-        new_password = get_pass('new password for encryption')
-
-        encrypted_key = encrypt_key(master_key, new_password)
-        accounts_dict[master_key_digest] = bytes_to_str(encrypted_key)
-
-        # Write accounts_dict to the password file.
-        write_file(filename, accounts_dict)
-
-        return 0
+    aes_key_digest = bytes_to_str(SHA512.new(b'\x00aes_key\x00').digest())
+    aes_key_enc = str_to_bytes(accounts_dict.pop(aes_key_digest, ''))
+    aes_key_enc, aes_key = get_aes_key(aes_key_enc)
 
     if not hashed_account:
         if args.get('list_account_info', False):
             # List all accounts if none where given, but list was requested.
             account_str = ''
             for account_data in accounts_dict.values():
-                account_dict = crypt_to_dict(account_data, master_key)
+                # account_dict = crypt_to_dict(account_data, password)
+                account_dict = crypt_to_dict_key(account_data, aes_key)
                 if account_dict:
                     account_str += '\n' + dict_to_str(account_dict)
             import pydoc
             pydoc.pager(account_str)
-        elif args.get('convert', False):
-            # Try to convert from old sha256 format to the new format.
+        elif args.get('re-encrypt', False):
+            # Try to re-encrypt every account.
+            encrypt_pass = get_pass('encryption password')
             tmp_accounts_dict = accounts_dict.copy()
             for account_hash, account_data in accounts_dict.items():
-                account_dict = crypt_to_dict_sha256(account_data,
-                                                    password=password,
-                                                    skip_invalid=True)
+                account_dict = crypt_to_dict(account_data, password=password,
+                                             skip_invalid=True)
+                # account_dict = crypt_to_dict_key(account_data, aes_key)
                 if account_dict:
-                    new_account_data = dict_to_crypt(account_dict, master_key)
+                    # new_account_data = dict_to_crypt(account_dict, encrypt_pass)
+                    new_account_data = dict_to_crypt_key(account_dict, aes_key)
                 else:
-                    raise(Exception("Invalid password.  Can't convert."))
+                    print("Invalid password.  Account will use the old password")
                 tmp_accounts_dict[account_hash] = new_account_data
-            tmp_accounts_dict[master_key_digest] = bytes_to_str(encrypted_key)
+            tmp_accounts_dict[aes_key_digest] = bytes_to_str(aes_key_enc)
             write_file(filename, tmp_accounts_dict)
             return 0
         elif args.get('search', ''):
@@ -559,7 +688,9 @@ def main(args: dict) -> int:
             for account_data in accounts_dict.values():
                 # Search through every account that can be decrypted with
                 # the password, or ask for a password for each account.
-                account_dict = crypt_to_dict(account_data, master_key)
+                # account_dict = crypt_to_dict(account_data, password=password,
+                #                              skip_invalid=True)
+                account_dict = crypt_to_dict_key(account_data, aes_key)
 
                 # If the password could decrypt the account, info search
                 # throuth every key and value in the account.
@@ -579,14 +710,15 @@ def main(args: dict) -> int:
         # Don't do anything with the account_data if it is to be
         # removed.
         if remove_account:
-            accounts_dict[master_key_digest] = bytes_to_str(encrypted_key)
+            accounts_dict[aes_key_digest] = bytes_to_str(aes_key_enc)
             write_file(filename, accounts_dict)
             return 0
 
         # If there was account data, then put the decrypted dictionary in
         # account_dict.  Otherwise put an empty dictionary.
         if account_data:
-            account_dict = crypt_to_dict(account_data, master_key)
+            # account_dict = crypt_to_dict(account_data, skip_invalid=False)
+            account_dict = crypt_to_dict_key(account_data, aes_key)
         else:
             account_dict = {}
 
@@ -603,7 +735,8 @@ def main(args: dict) -> int:
                     account_dict.pop(key)
 
             # Encrypt the account_dict.
-            account_data = dict_to_crypt(account_dict, master_key)
+            # account_data = dict_to_crypt(account_dict)
+            account_data = dict_to_crypt_key(account_dict, aes_key)
 
         # Print the account info.
         if args.get('list_account_info', False) and account_dict:
@@ -612,7 +745,7 @@ def main(args: dict) -> int:
 
         # Put the accounts data back into the dictionary.
         accounts_dict[hashed_account] = account_data
-        accounts_dict[master_key_digest] = bytes_to_str(encrypted_key)
+        accounts_dict[aes_key_digest] = bytes_to_str(aes_key_enc)
 
         # Write accounts_dict to the password file.
         write_file(filename, accounts_dict)
@@ -638,20 +771,22 @@ if __name__ == '__main__':
     parser.add_argument('-l', '--list', dest='list_account_info',
                         action='store_true',
                         help='Print out the account information.')
+    parser.add_argument('-o', '--onepassword', dest='one_password',
+                        action='store_true',
+                        help='Use the same password for all account \
+                        decryption.')
     parser.add_argument('-a', '--account', dest='account', action='store',
                         help='The account to operate on')
-    parser.add_argument('-p', '--password', dest='new_password',
-                        action='store_true', help='Change the password.')
-    parser.add_argument('-c', '--convert', dest='convert',
+    parser.add_argument('-e', '--encrypt', dest='re-encrypt',
                         action='store_true', default=False,
-                        help='Convert from old sha256 format the the new \
-                        format.')
+                        help='Re-encrypt all entries.  Use with -o to use the \
+                        same password for all accounts.')
     parser.add_argument('-x', '--search', dest='search', action='store',
                         help='Search through all entries. (use with -o to use \
                         one password)')
     args = parser.parse_args()
 
-    if args.__dict__.get('convert', False):
+    if args.one_password:
         password = getpass.getpass('Password to use for decryption: ')
         args.password = password
     else:
