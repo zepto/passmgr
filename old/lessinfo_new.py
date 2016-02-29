@@ -489,6 +489,7 @@ def verify_key(crypted_key: bytes, password: bytes) -> bytes:
     return crypt_key
 
 
+# def convert(filename: str) -> int:
 def convert(args: object) -> int:
     """ Convert from sha256 hashed key to using a master key and encrypting the
     master key with a password based key.
@@ -520,6 +521,7 @@ def convert(args: object) -> int:
     return 0
 
 
+# def search(filename: str, search_term: str) -> int:
 def search(args: object) -> int:
     """ Search for search_term in filename.
 
@@ -555,6 +557,7 @@ def search(args: object) -> int:
     return 0
 
 
+# def change_password(filename: str) -> int:
 def change_password(args: object) -> int:
     """ Change the password that encrypts the master key.
 
@@ -576,6 +579,7 @@ def change_password(args: object) -> int:
     return 0
 
 
+# def remove_account(filename: str, account: str) -> int:
 def remove_account(args: object) -> int:
     """ Remove account from filename.
 
@@ -701,11 +705,149 @@ def list_info(args: object) -> int:
         pydoc.pager(dict_to_str(account_dict))
 
 
+def main(args: dict) -> int:
+    """ Read the password file, decrypt it and print the requested info.
+
+    """
+
+    if args.convert:
+        return convert(args)
+    if args.search:
+        return search(args)
+    if args.new_password:
+        return change_password(args)
+    if args.remove_account:
+        return remove_account(args)
+    else:
+        args = args.__dict__
+        filename = args.pop('filename')
+        account = args.pop('account', '')
+        remove_account = args.pop('remove_account', '')
+
+
+    # Read the accounts dictionary into accounts_dict.
+    accounts_dict, encrypted_key, master_key = read_file(filename)
+
+    if account:
+        # Get the sha512 hash of the account name.
+        hashed_account = SHA512.new(account.encode()).hexdigest()
+
+        # Create the information dictionary from the info list supplied
+        # by the user.
+        info_seperator = args.get('info_seperator', '=')
+        info_dict = list_to_dict(args.pop('info_list', []), info_seperator)
+
+        if info_dict:
+            # Put the non-hashed account name in the info dict so it is
+            # not lost.
+            info_dict['Account Name'] = account
+
+            # Get the secret information.
+            for key, value in info_dict.items():
+                if value == '{secret}':
+                    secret = get_pass('{0} {1}'.format(account, key))
+                    info_dict[key] = secret
+    else:
+        # No account name was given.
+        hashed_account = b''
+
+    if not hashed_account:
+        if args.get('list_account_info', False):
+            # List all accounts if none where given, but list was requested.
+            account_str = ''
+            for account_data in accounts_dict.values():
+                account_dict = crypt_to_dict(account_data, master_key)
+                if account_dict:
+                    account_str += '\n' + dict_to_str(account_dict)
+            import pydoc
+            pydoc.pager(account_str)
+        elif args.get('convert', False):
+            pass
+        elif args.get('search', ''):
+            pass
+    else:
+        # Pop the requested account out of the dictionary, so it can be
+        # modified, removed, or just printed to stdout.
+        account_data = accounts_dict.pop(hashed_account, '')
+
+        # Don't do anything with the account_data if it is to be
+        # removed.
+        if remove_account:
+            write_file(filename, accounts_dict, encrypted_key)
+            return 0
+
+        # If there was account data, then put the decrypted dictionary in
+        # account_dict.  Otherwise put an empty dictionary.
+        if account_data:
+            account_dict = crypt_to_dict(account_data, master_key)
+        else:
+            account_dict = {}
+
+        # Update the account info if new data was supplied.
+        if info_dict:
+            account_dict.update(info_dict)
+
+            # Remove items from account_dict for which info_dict has an
+            # empty value.  (i.e. to remove items from an accounts info
+            # the user needs to supply an empty value after the
+            # sperator.
+            for key, value in info_dict.items():
+                if not value.strip():
+                    account_dict.pop(key)
+
+            # Encrypt the account_dict.
+            account_data = dict_to_crypt(account_dict, master_key)
+
+        # Print the account info.
+        if args.get('list_account_info', False) and account_dict:
+            import pydoc
+            pydoc.pager(dict_to_str(account_dict))
+
+        if account_data:
+            # Put the accounts data back into the dictionary.
+            accounts_dict[hashed_account] = account_data
+
+        # Write accounts_dict to the password file.
+        write_file(filename, accounts_dict, encrypted_key)
+
+    return 0
+
+
 if __name__ == '__main__':
     from argparse import ArgumentParser
 
     parser = ArgumentParser(description="Password manager")
     subparsers = parser.add_subparsers(help="sub-command help")
+    convert_group = subparsers.add_parser('convert', help='Convert from old \
+                                           sha256 format the the new format.')
+    convert_group.add_argument('filename')
+    convert_group.set_defaults(func=convert)
+
+    change_password_group = subparsers.add_parser('password', help='Change the \
+                                                   password')
+    change_password_sub = change_password_group.add_subparsers(help='Change the password for the specified file.', dest='for')
+    change_password_sub.required = True
+    change_password_sub_group = change_password_sub.add_parser('for', help="Change the password in filename")
+    change_password_sub_group.add_argument('filename')
+    change_password_group.set_defaults(func=change_password)
+
+    list_group = subparsers.add_parser('list', help='List all info for an \
+                                       account')
+    list_group.add_argument('account', action='store', help='What account to list the info of.  Use "all" as the account to list all the info in the file.')
+    list_sub = list_group.add_subparsers(help='Specify the file to list info from.', dest='in')
+    list_sub.required = True
+    list_sub_group = list_sub.add_parser('in', help="filename")
+    list_sub_group.add_argument('filename')
+    list_group.set_defaults(func=list_info)
+
+    find_group = subparsers.add_parser('find', help='Search in the file for a string.')
+    find_group.add_argument('search_term', action='store',
+                            help='What to search for.')
+    find_sub = find_group.add_subparsers(help='Search "in" what file.', dest='in')
+    find_sub.required = True
+    find_sub_group = find_sub.add_parser('in', help="in filename")
+    find_sub_group.add_argument('filename')
+    find_group.set_defaults(func=search)
 
     add_group = subparsers.add_parser('add', help='Add an account.')
     add_group.add_argument('account', action='store',
@@ -714,92 +856,55 @@ if __name__ == '__main__':
                             help='Set the info seperator (default is "=")')
     add_sub = add_group.add_subparsers(help='Add "to" a filename', dest='to')
     add_sub.required = True
-    add_sub_group = add_sub.add_parser('to',
-                                       help='Add the account "to" filename')
+    add_sub_group = add_sub.add_parser('to', help='Add the account "to" filename')
     add_sub_group.add_argument('filename')
-    file_sub = add_sub_group.add_subparsers(help='set info=data (e.g. set \
-                                            username=bif', dest='set')
+    file_sub = add_sub_group.add_subparsers(help='set info=data (e.g. set username=bif', dest='set')
     file_sub_group = file_sub.add_parser('set', help='Set item info.')
-    file_sub_group.add_argument('data', nargs="+",
-                                help='Use {secret} to input secrets e.g. \
-                                      (Question={secret})')
+    file_sub_group.add_argument('data', nargs="+", help='Use {secret} to input \
+                            secrets e.g. (Question={secret})')
     add_group.set_defaults(func=add_account)
-
-    change_group = subparsers.add_parser('change',
-                                         help='Change the info in an account.')
-    change_group.add_argument('account', action='store',
-                              help='The name of the account to change.')
-    change_group.add_argument('-s', '--seperator',  action='store',
-                              default='=',
-                              help='Set the info seperator (default is "=")')
-    change_sub = change_group.add_subparsers(help='Add "to" a filename',
-                                             dest='to')
-    change_sub.required = True
-    change_sub_group = change_sub.add_parser('in', help='Add the account "to" \
-                                                         filename')
-    change_sub_group.add_argument('filename')
-    file_sub = change_sub_group.add_subparsers(help='set info=data (e.g. set \
-                                                     username=bif', dest='set')
-    file_sub_group = file_sub.add_parser('set', help='Set item info.')
-    file_sub_group.add_argument('data', nargs="+",
-                                help='Use {secret} to input secrets e.g. \
-                                      (Question={secret})')
-    change_group.set_defaults(func=add_account)
 
     remove_group = subparsers.add_parser('remove', help='Remove an item')
     remove_group.add_argument('account', action='store',
                             help='The account to remove.')
-    remove_sub = remove_group.add_subparsers(dest='from',
-                                             help='The file from which the \
-                                                   accout should be removed.')
+    remove_sub = remove_group.add_subparsers(help='The file from which the accout should be removed.', dest='from')
     remove_sub.required = True
     remove_sub_group = remove_sub.add_parser('from', help="filename")
     remove_sub_group.add_argument('filename')
     remove_group.set_defaults(func=remove_account)
 
-    convert_group = subparsers.add_parser('convert', help='Convert from old \
-                                           sha256 format the the new format.')
-    convert_group.add_argument('filename')
-    convert_group.set_defaults(func=convert)
-
-    password_group = subparsers.add_parser('password', help='Change the \
-                                                             password')
-    password_sub = password_group.add_subparsers(help='Change the password \
-                                                       for the specified \
-                                                       file.', dest='for')
-    password_sub.required = True
-    password_sub_group = password_sub.add_parser('for', help="Change the \
-                                                              password in \
-                                                              filename")
-    password_sub_group.add_argument('filename')
-    password_group.set_defaults(func=change_password)
-
-    list_group = subparsers.add_parser('list', help='List all info for an \
-                                                     account')
-    list_group.add_argument('account', action='store', help='What account to \
-                                                             list the info \
-                                                             of.  Use "all" \
-                                                             as the account \
-                                                             to list all the \
-                                                             info in the \
-                                                             file.')
-    list_sub = list_group.add_subparsers(help='Specify the file to list info \
-                                               from.', dest='in')
-    list_sub.required = True
-    list_sub_group = list_sub.add_parser('in', help="filename")
-    list_sub_group.add_argument('filename')
-    list_group.set_defaults(func=list_info)
-
-    find_group = subparsers.add_parser('find',
-                                       help='Search in the file for a string.')
-    find_group.add_argument('search_term', action='store',
-                            help='What to search for.')
-    find_sub = find_group.add_subparsers(help='Search "in" what file.',
-                                         dest='in')
-    find_sub.required = True
-    find_sub_group = find_sub.add_parser('in', help="in filename")
-    find_sub_group.add_argument('filename')
-    find_group.set_defaults(func=search)
-
     args, leftovers = parser.parse_known_args()
     args.func(args)
+
+    # group = parser.add_mutually_exclusive_group()
+    # group.add_argument('-l', '--list', dest='list_account_info',
+    #                     action='store_true',
+    #                     help='List all info in file.')
+    # group.add_argument('-p', '--password', dest='new_password',
+    #                     action='store_true', help='Change the password.')
+    # group.add_argument('-c', '--convert', dest='convert',
+    #                     action='store_true', default=False,
+    #                     help='Convert from old sha256 format the the new \
+    #                     format.')
+    # group.add_argument('-x', '--search', dest='search', action='store',
+    #                     help='Search through all entries.')
+    # parser.add_argument('filename', help="File to use.")
+    #
+    # subparsers = parser.add_subparsers(help="sub-command help")
+    # item_group = subparsers.add_parser('item', help='Add an item')
+    # item_group.add_argument('account', action='store',
+    #                         help='The item to operate on')
+    # item_group.add_argument('-i', '--info', dest='info_list', action='append',
+    #                         help='Set item info.  Use {secret} to input \
+    #                         secrets e.g. (Question={secret})')
+    # item_group.add_argument('-s', '--seperator', dest='info_seperator',
+    #                         action='store', default='=',
+    #                         help='Set the info seperator (default is "=")')
+    # item_group.add_argument('-l', '--list', dest='list_account_info',
+    #                         action='store_true',
+    #                         help='List all the info about item.')
+    # item_group.add_argument('-r', '--remove', dest='remove_account',
+    #                         action='store_true', help='Remove the item.')
+    # args, leftovers = parser.parse_known_args()
+    #
+    # main(args.__dict__)

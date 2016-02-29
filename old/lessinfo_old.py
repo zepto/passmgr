@@ -254,9 +254,8 @@ def write_file(filename: str, accounts_dict: dict, encrypted_key: bytes):
         pass_file.write_bytes(lzma_data)
 
 
-def read_file(filename: str, password: str = '') -> tuple:
-    """ Reads the data from filename and returns the account dictionary, the
-    encrypted master key, and the decrypted master key.
+def read_file(filename: str) -> dict:
+    """ Reads the data from filename and returns the account dictionary.
 
     """
 
@@ -271,15 +270,8 @@ def read_file(filename: str, password: str = '') -> tuple:
     else:
         json_data = '{}'
 
-    accounts_dict = json_loads(json_data)
-
-    # Pop the master key out of the accounts dictionary so it won't be
-    # operated on or listed.  Also if no master key is found, create
-    # one.
-    encrypted_key = bytes.fromhex(accounts_dict.pop(MASTER_KEY_DIGEST, ''))
-    encrypted_key, master_key = get_master_key(encrypted_key, password)
-
-    return accounts_dict, encrypted_key, master_key
+    # Load the json data into a dictionary.
+    return json_loads(json_data)
 
 
 def crypt_to_dict(crypt_data: str, key: bytes) -> dict:
@@ -489,206 +481,122 @@ def verify_key(crypted_key: bytes, password: bytes) -> bytes:
     return crypt_key
 
 
-def convert(args: object) -> int:
-    """ Convert from sha256 hashed key to using a master key and encrypting the
-    master key with a password based key.
+def main(args: dict) -> int:
+    """ Read the password file, decrypt it and print the requested info.
 
     """
 
-    filename = args.filename
-    password = get_pass('password', verify=False)
+    filename = args.pop('filename')
+    account = args.pop('account')
+    remove_account = args.pop('remove_account')
 
-    # Read the accounts dictionary into accounts_dict.
-    accounts_dict, encrypted_key, master_key = read_file(filename, password)
-
-    # Try to convert from old sha256 format to the new format.
-    print("Converting...", end='')
-    tmp_accounts_dict = {}
-    for account_hash, account_data in accounts_dict.items():
-        account_dict = crypt_to_dict_sha256(account_data,
-                                            password=password,
-                                            skip_invalid=True)
-        if account_dict:
-            new_account_data = dict_to_crypt(account_dict, master_key)
-        else:
-            raise(Exception("Invalid password.  Can't convert."))
-        account_name = account_dict.get('Account Name', '')
-        new_account_hash = SHA512.new(account_name.encode()).hexdigest()
-        tmp_accounts_dict[new_account_hash] = new_account_data
-    write_file(filename, tmp_accounts_dict, encrypted_key)
-    print("Done.")
-    return 0
-
-
-def search(args: object) -> int:
-    """ Search for search_term in filename.
-
-    """
-
-    filename = args.filename
-    search_term = args.search_term
-
-    # Read the accounts dictionary into accounts_dict.
-    accounts_dict, _, master_key = read_file(filename)
-
-    search_str = search_term.lower()
-
-    # String to store all matching account information.
-    account_str = ''
-
-    for account_data in accounts_dict.values():
-        # Search through every account that can be decrypted with
-        # the password, or ask for a password for each account.
-        account_dict = crypt_to_dict(account_data, master_key)
-
-        # If the password could decrypt the account, info search
-        # throuth every key and value in the account.
-        if account_dict:
-            for key, value in account_dict.items():
-                if search_str in key.lower() or search_str in value.lower():
-                    account_str += '\n' + dict_to_str(account_dict)
-                    # Don't add the same account more than once.
-                    break
-    import pydoc
-    pydoc.pager(account_str)
-
-    return 0
-
-
-def change_password(args: object) -> int:
-    """ Change the password that encrypts the master key.
-
-    """
-
-    filename = args.filename
-
-    # Read the accounts dictionary into accounts_dict.
-    accounts_dict, encrypted_key, master_key = read_file(filename)
-
-    # Change the password.
-    new_password = get_pass('new password')
-
-    encrypted_key = encrypt_key(master_key, new_password)
-
-    # Write accounts_dict to the password file.
-    write_file(filename, accounts_dict, encrypted_key)
-
-    return 0
-
-
-def remove_account(args: object) -> int:
-    """ Remove account from filename.
-
-    """
-
-    filename = args.filename
-    account = args.account
-
-    # Read the accounts dictionary into accounts_dict.
-    accounts_dict, encrypted_key, master_key = read_file(filename)
-
-    # Get the sha512 hash of the account name.
-    hashed_account = SHA512.new(account.encode()).hexdigest()
-
-    # Pop the account to be removed.
-    account_data = accounts_dict.pop(hashed_account, '')
-
-    # Don't do anything with the account_data if it is to be
-    # removed.
-    write_file(filename, accounts_dict, encrypted_key)
-
-    return 0
-
-
-def add_account(args: object) -> int:
-    """ Add an account the the file.
-
-    """
-
-    print(args)
-    filename = args.filename
-    account = args.account
-
-    # Get the sha512 hash of the account name.
-    hashed_account = SHA512.new(account.encode()).hexdigest()
-
-    # Read the accounts dictionary into accounts_dict.
-    accounts_dict, encrypted_key, master_key = read_file(filename)
-
-    # Pop the requested account out of the dictionary, so it can be
-    # modified, removed, or just printed to stdout.
-    account_data = accounts_dict.pop(hashed_account, '')
-
-    if args.set:
-        info_dict = list_to_dict(args.data, args.seperator)
-
-        # Put the non-hashed account name in the info dict so it is
-        # not lost.
-        info_dict['Account Name'] = account
-
-        # Get the secret information.
-        for key, value in info_dict.items():
-            if value == '{secret}':
-                secret = get_pass('{0} {1}'.format(account, key))
-                info_dict[key] = secret
-
-        # If there was account data, then put the decrypted dictionary in
-        # account_dict.  Otherwise put an empty dictionary.
-        if account_data:
-            account_dict = crypt_to_dict(account_data, master_key)
-        else:
-            account_dict = {}
-
-        account_dict.update(info_dict)
-
-        # Remove items from account_dict for which info_dict has an
-        # empty value.  (i.e. to remove items from an accounts info
-        # the user needs to supply an empty value after the
-        # sperator.
-        for key, value in info_dict.items():
-            if not value.strip():
-                account_dict.pop(key)
-
-        # Encrypt the account_dict.
-        account_data = dict_to_crypt(account_dict, master_key)
+    if args.get('convert', ''):
+        password = get_pass('password', verify=False)
     else:
-        info_dict = {}
-
-    if account_data:
-        # Put the accounts data back into the dictionary.
-        accounts_dict[hashed_account] = account_data
-
-    # Write accounts_dict to the password file.
-    write_file(filename, accounts_dict, encrypted_key)
-
-    return 0
+        password = ''
 
 
-def list_info(args: object) -> int:
-    """ List the info in the account or file.
-
-    """
-
-    filename = args.filename
-    account = args.account
-
-    # Read the accounts dictionary into accounts_dict.
-    accounts_dict, _, master_key = read_file(filename)
-
-    if account.lower() == 'all':
-        # List all accounts if none where given, but list was requested.
-        account_str = ''
-        for account_data in accounts_dict.values():
-            account_dict = crypt_to_dict(account_data, master_key)
-            if account_dict:
-                account_str += '\n' + dict_to_str(account_dict)
-        import pydoc
-        pydoc.pager(account_str)
-    else:
+    if account:
         # Get the sha512 hash of the account name.
         hashed_account = SHA512.new(account.encode()).hexdigest()
 
-        account_data = accounts_dict.get(hashed_account, '')
+        # Create the information dictionary from the info list supplied
+        # by the user.
+        info_dict = list_to_dict(args.pop('info_list'), args['info_seperator'])
+
+        if info_dict:
+            # Put the non-hashed account name in the info dict so it is
+            # not lost.
+            info_dict['Account Name'] = account
+
+            # Get the secret information.
+            for key, value in info_dict.items():
+                if value == '{secret}':
+                    secret = get_pass('{0} {1}'.format(account, key))
+                    info_dict[key] = secret
+    else:
+        # No account name was given.
+        hashed_account = b''
+
+    # Read the accounts dictionary into accounts_dict.
+    accounts_dict = read_file(filename)
+
+    # Pop the master key out of the accounts dictionary so it won't be
+    # operated on or listed.  Also if no master key is found, create
+    # one.
+    encrypted_key = bytes.fromhex(accounts_dict.pop(MASTER_KEY_DIGEST, ''))
+    encrypted_key, master_key = get_master_key(encrypted_key, password)
+
+    # Change the password.
+    if args.get('new_password', False):
+        new_password = get_pass('new password')
+
+        encrypted_key = encrypt_key(master_key, new_password)
+
+        # Write accounts_dict to the password file.
+        write_file(filename, accounts_dict, encrypted_key)
+
+        return 0
+
+    if not hashed_account:
+        if args.get('list_account_info', False):
+            # List all accounts if none where given, but list was requested.
+            account_str = ''
+            for account_data in accounts_dict.values():
+                account_dict = crypt_to_dict(account_data, master_key)
+                if account_dict:
+                    account_str += '\n' + dict_to_str(account_dict)
+            import pydoc
+            pydoc.pager(account_str)
+        elif args.get('convert', False):
+            # Try to convert from old sha256 format to the new format.
+            print("Converting...", end='')
+            tmp_accounts_dict = {}
+            for account_hash, account_data in accounts_dict.items():
+                account_dict = crypt_to_dict_sha256(account_data,
+                                                    password=password,
+                                                    skip_invalid=True)
+                if account_dict:
+                    new_account_data = dict_to_crypt(account_dict, master_key)
+                else:
+                    raise(Exception("Invalid password.  Can't convert."))
+                account_name = account_dict.get('Account Name', '')
+                new_account_hash = SHA512.new(account_name.encode()).hexdigest()
+                tmp_accounts_dict[new_account_hash] = new_account_data
+            write_file(filename, tmp_accounts_dict, encrypted_key)
+            print("Done.")
+            return 0
+        elif args.get('search', ''):
+            search_str = args['search'].lower()
+
+            # String to store all matching account information.
+            account_str = ''
+
+            for account_data in accounts_dict.values():
+                # Search through every account that can be decrypted with
+                # the password, or ask for a password for each account.
+                account_dict = crypt_to_dict(account_data, master_key)
+
+                # If the password could decrypt the account, info search
+                # throuth every key and value in the account.
+                if account_dict:
+                    for key, value in account_dict.items():
+                        if search_str in key.lower() or search_str in value.lower():
+                            account_str += '\n' + dict_to_str(account_dict)
+                            # Don't add the same account more than once.
+                            break
+            import pydoc
+            pydoc.pager(account_str)
+    else:
+        # Pop the requested account out of the dictionary, so it can be
+        # modified, removed, or just printed to stdout.
+        account_data = accounts_dict.pop(hashed_account, '')
+
+        # Don't do anything with the account_data if it is to be
+        # removed.
+        if remove_account:
+            write_file(filename, accounts_dict, encrypted_key)
+            return 0
 
         # If there was account data, then put the decrypted dictionary in
         # account_dict.  Otherwise put an empty dictionary.
@@ -697,109 +605,65 @@ def list_info(args: object) -> int:
         else:
             account_dict = {}
 
-        import pydoc
-        pydoc.pager(dict_to_str(account_dict))
+        # Update the account info if new data was supplied.
+        if info_dict:
+            account_dict.update(info_dict)
+
+            # Remove items from account_dict for which info_dict has an
+            # empty value.  (i.e. to remove items from an accounts info
+            # the user needs to supply an empty value after the
+            # sperator.
+            for key, value in info_dict.items():
+                if not value.strip():
+                    account_dict.pop(key)
+
+            # Encrypt the account_dict.
+            account_data = dict_to_crypt(account_dict, master_key)
+
+        # Print the account info.
+        if args.get('list_account_info', False) and account_dict:
+            import pydoc
+            pydoc.pager(dict_to_str(account_dict))
+
+        if account_data:
+            # Put the accounts data back into the dictionary.
+            accounts_dict[hashed_account] = account_data
+
+        # Write accounts_dict to the password file.
+        write_file(filename, accounts_dict, encrypted_key)
+
+    return 0
 
 
 if __name__ == '__main__':
     from argparse import ArgumentParser
 
     parser = ArgumentParser(description="Password manager")
-    subparsers = parser.add_subparsers(help="sub-command help")
-
-    add_group = subparsers.add_parser('add', help='Add an account.')
-    add_group.add_argument('account', action='store',
-                            help='The name of the account to add.')
-    add_group.add_argument('-s', '--seperator',  action='store', default='=',
-                            help='Set the info seperator (default is "=")')
-    add_sub = add_group.add_subparsers(help='Add "to" a filename', dest='to')
-    add_sub.required = True
-    add_sub_group = add_sub.add_parser('to',
-                                       help='Add the account "to" filename')
-    add_sub_group.add_argument('filename')
-    file_sub = add_sub_group.add_subparsers(help='set info=data (e.g. set \
-                                            username=bif', dest='set')
-    file_sub_group = file_sub.add_parser('set', help='Set item info.')
-    file_sub_group.add_argument('data', nargs="+",
-                                help='Use {secret} to input secrets e.g. \
-                                      (Question={secret})')
-    add_group.set_defaults(func=add_account)
-
-    change_group = subparsers.add_parser('change',
-                                         help='Change the info in an account.')
-    change_group.add_argument('account', action='store',
-                              help='The name of the account to change.')
-    change_group.add_argument('-s', '--seperator',  action='store',
-                              default='=',
-                              help='Set the info seperator (default is "=")')
-    change_sub = change_group.add_subparsers(help='Add "to" a filename',
-                                             dest='to')
-    change_sub.required = True
-    change_sub_group = change_sub.add_parser('in', help='Add the account "to" \
-                                                         filename')
-    change_sub_group.add_argument('filename')
-    file_sub = change_sub_group.add_subparsers(help='set info=data (e.g. set \
-                                                     username=bif', dest='set')
-    file_sub_group = file_sub.add_parser('set', help='Set item info.')
-    file_sub_group.add_argument('data', nargs="+",
-                                help='Use {secret} to input secrets e.g. \
-                                      (Question={secret})')
-    change_group.set_defaults(func=add_account)
-
-    remove_group = subparsers.add_parser('remove', help='Remove an item')
-    remove_group.add_argument('account', action='store',
-                            help='The account to remove.')
-    remove_sub = remove_group.add_subparsers(dest='from',
-                                             help='The file from which the \
-                                                   accout should be removed.')
-    remove_sub.required = True
-    remove_sub_group = remove_sub.add_parser('from', help="filename")
-    remove_sub_group.add_argument('filename')
-    remove_group.set_defaults(func=remove_account)
-
-    convert_group = subparsers.add_parser('convert', help='Convert from old \
-                                           sha256 format the the new format.')
-    convert_group.add_argument('filename')
-    convert_group.set_defaults(func=convert)
-
-    password_group = subparsers.add_parser('password', help='Change the \
-                                                             password')
-    password_sub = password_group.add_subparsers(help='Change the password \
-                                                       for the specified \
-                                                       file.', dest='for')
-    password_sub.required = True
-    password_sub_group = password_sub.add_parser('for', help="Change the \
-                                                              password in \
-                                                              filename")
-    password_sub_group.add_argument('filename')
-    password_group.set_defaults(func=change_password)
-
-    list_group = subparsers.add_parser('list', help='List all info for an \
-                                                     account')
-    list_group.add_argument('account', action='store', help='What account to \
-                                                             list the info \
-                                                             of.  Use "all" \
-                                                             as the account \
-                                                             to list all the \
-                                                             info in the \
-                                                             file.')
-    list_sub = list_group.add_subparsers(help='Specify the file to list info \
-                                               from.', dest='in')
-    list_sub.required = True
-    list_sub_group = list_sub.add_parser('in', help="filename")
-    list_sub_group.add_argument('filename')
-    list_group.set_defaults(func=list_info)
-
-    find_group = subparsers.add_parser('find',
-                                       help='Search in the file for a string.')
-    find_group.add_argument('search_term', action='store',
-                            help='What to search for.')
-    find_sub = find_group.add_subparsers(help='Search "in" what file.',
-                                         dest='in')
-    find_sub.required = True
-    find_sub_group = find_sub.add_parser('in', help="in filename")
-    find_sub_group.add_argument('filename')
-    find_group.set_defaults(func=search)
-
+    group = parser.add_mutually_exclusive_group()
+    parser.add_argument('-a', '--account', dest='account', action='store',
+                        help='The account to operate on')
+    parser.add_argument('-r', '--remove', dest='remove_account',
+                        action='store_true', default=False,
+                        help='Remove account')
+    parser.add_argument('-s', '--seperator', dest='info_seperator',
+                        action='store', default='=',
+                        help='Set the info seperator (default is "=")')
+    parser.add_argument('-i', '--info', dest='info_list', action='append',
+                        help='Set account info.  Use {secret} to input \
+                        secrets e.g. (Question={secret})')
+    group.add_argument('-l', '--list', dest='list_account_info',
+                        action='store_true',
+                        help='Print out the account information.')
+    group.add_argument('-p', '--password', dest='new_password',
+                        action='store_true', help='Change the password.')
+    group.add_argument('-c', '--convert', dest='convert',
+                        action='store_true', default=False,
+                        help='Convert from old sha256 format the the new \
+                        format.')
+    group.add_argument('-x', '--search', dest='search', action='store',
+                        help='Search through all entries. (use with -o to use \
+                        one password)')
+    parser.add_argument(dest='filename')
     args, leftovers = parser.parse_known_args()
-    args.func(args)
+
+    main(args.__dict__)
