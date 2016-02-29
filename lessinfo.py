@@ -26,13 +26,11 @@ data is encrypted using AES-256-CBC encryption.
 """
 
 
-from os.path import isfile as os_isfile
+from pathlib import Path as pathlib_path
 from lzma import compress as lzma_compress
 from lzma import decompress as lzma_decompress
 from json import loads as json_loads
 from json import dumps as json_dumps
-from binascii import hexlify as ba_hexlify
-from binascii import unhexlify as ba_unhexlify
 import codecs
 import getpass
 from os import environ as os_environ
@@ -55,6 +53,7 @@ os_environ['PAGER'] = '$(which less)'
 KEY_LEN = SALT_LEN = AES.key_size[-1]
 IV_LEN = AES.block_size
 
+MASTER_KEY_DIGEST = SHA512.new(b'\x00master_key\x00').hexdigest()
 
 def PKCS7_pad(data: bytes, multiple: int) -> bytes:
     """ Pad the data using the PKCS#7 method.
@@ -245,15 +244,34 @@ def write_file(filename: str, accounts_dict: dict, encrypted_key: bytes):
     """
 
     # Put the master key into the accounts dict.
-    master_key_digest = SHA512.new(b'\x00master_key\x00').hexdigest()
-    accounts_dict[master_key_digest] = ba_hexlify(encrypted_key).decode()
+    accounts_dict[MASTER_KEY_DIGEST] = encrypted_key.hex()
 
     json_data = json_dumps(accounts_dict)
 
     lzma_data = lzma_compress(json_data.encode())
 
-    with open(filename, 'wb') as pass_file:
-        pass_file.write(lzma_data)
+    with pathlib_path(filename) as pass_file:
+        pass_file.write_bytes(lzma_data)
+
+
+def read_file(filename: str) -> dict:
+    """ Reads the data from filename and returns the account dictionary.
+
+    """
+
+    # Read from the file if it exists.
+    with pathlib_path(filename) as pass_file:
+        lzma_data = pass_file.read_bytes() if pass_file.is_file() else b''
+
+    # Get the json data out of the file data or an empty json dict of
+    # the file was empty.
+    if lzma_data:
+        json_data = lzma_decompress(lzma_data).decode()
+    else:
+        json_data = '{}'
+
+    # Load the json data into a dictionary.
+    return json_loads(json_data)
 
 
 def crypt_to_dict(crypt_data: str, key: bytes) -> dict:
@@ -264,7 +282,7 @@ def crypt_to_dict(crypt_data: str, key: bytes) -> dict:
     """
 
     # Convert the data to a bytes object and decrypt it.
-    json_data = decrypt(key, ba_unhexlify(crypt_data))
+    json_data = decrypt(key, bytes.fromhex(crypt_data))
 
     # Load the decrypted data with json and return the resulting
     # dictionary.
@@ -281,8 +299,8 @@ def dict_to_crypt(data_dict: dict, key: bytes) -> str:
 
     ciphertext = encrypt(key, json_data)
 
-    # Return the the hexlified ciphertext.
-    return ba_hexlify(ciphertext).decode()
+    # Return the the hexified ciphertext.
+    return ciphertext.hex()
 
 
 def crypt_to_dict_sha256(crypt_data: str, password: str = '',
@@ -494,37 +512,19 @@ def main(args: dict) -> int:
             # Get the secret information.
             for key, value in info_dict.items():
                 if value == '{secret}':
-                    secret = get_pass(key)
+                    secret = get_pass('{0} {1}'.format(account, key))
                     info_dict[key] = secret
     else:
         # No account name was given.
         hashed_account = b''
 
-    # Create the file if it doesn't exist.
-    if not os_isfile(filename):
-        open_mode = 'w+b'
-    else:
-        open_mode = 'rb'
-
-    with open(filename, open_mode) as pass_file:
-        # Read all the data from the file.
-        lzma_data = pass_file.read()
-
-    # Get the json data out of the file data or an empty json dict of
-    # the file was empty.
-    if lzma_data:
-        json_data = lzma_decompress(lzma_data).decode()
-    else:
-        json_data = '{}'
-
-    # Load the json data into a dictionary.
-    accounts_dict = json_loads(json_data)
+    # Read the accounts dictionary into accounts_dict.
+    accounts_dict = read_file(filename)
 
     # Pop the master key out of the accounts dictionary so it won't be
     # operated on or listed.  Also if no master key is found, create
     # one.
-    master_key_digest = SHA512.new(b'\x00master_key\x00').hexdigest()
-    encrypted_key = ba_unhexlify(accounts_dict.pop(master_key_digest, ''))
+    encrypted_key = bytes.fromhex(accounts_dict.pop(MASTER_KEY_DIGEST, ''))
     encrypted_key, master_key = get_master_key(encrypted_key, password)
 
     # Change the password.
@@ -639,31 +639,31 @@ if __name__ == '__main__':
     from argparse import ArgumentParser
 
     parser = ArgumentParser(description="Password manager")
-    parser.add_argument('-i', '--info', dest='info_list', action='append',
-                        help='Set account info.  Use {secret} to input \
-                        secrets e.g. (Question={secret})')
-    parser.add_argument('-s', '--seperator', dest='info_seperator',
-                        action='store', default='=',
-                        help='Set the info seperator (default is "=")')
+    group = parser.add_mutually_exclusive_group()
+    parser.add_argument('-a', '--account', dest='account', action='store',
+                        help='The account to operate on')
     parser.add_argument('-r', '--remove', dest='remove_account',
                         action='store_true', default=False,
                         help='Remove account')
-    parser.add_argument('-f', '--filename', dest='filename', action='store',
-                        required=True, help='Account details file.')
-    parser.add_argument('-l', '--list', dest='list_account_info',
+    parser.add_argument('-s', '--seperator', dest='info_seperator',
+                        action='store', default='=',
+                        help='Set the info seperator (default is "=")')
+    parser.add_argument('-i', '--info', dest='info_list', action='append',
+                        help='Set account info.  Use {secret} to input \
+                        secrets e.g. (Question={secret})')
+    group.add_argument('-l', '--list', dest='list_account_info',
                         action='store_true',
                         help='Print out the account information.')
-    parser.add_argument('-a', '--account', dest='account', action='store',
-                        help='The account to operate on')
-    parser.add_argument('-p', '--password', dest='new_password',
+    group.add_argument('-p', '--password', dest='new_password',
                         action='store_true', help='Change the password.')
-    parser.add_argument('-c', '--convert', dest='convert',
+    group.add_argument('-c', '--convert', dest='convert',
                         action='store_true', default=False,
                         help='Convert from old sha256 format the the new \
                         format.')
-    parser.add_argument('-x', '--search', dest='search', action='store',
+    group.add_argument('-x', '--search', dest='search', action='store',
                         help='Search through all entries. (use with -o to use \
                         one password)')
-    args = parser.parse_args()
+    parser.add_argument(dest='filename')
+    args, leftovers = parser.parse_known_args()
 
     main(args.__dict__)
