@@ -94,26 +94,6 @@ class PassFile(object):
 
         self._read_file(filename, password)
 
-    def _get_pass(self, question_str: str, verify: bool = True) -> str:
-        """ Get a secret and by asking twice to make sure it was inputed
-        correctly.
-
-        """
-
-        if not verify: return getpass.getpass('Enter the %s: ' % question_str)
-
-        a1 = 'a'
-        a2 = 'b'
-
-        # Loop until both entries match.
-        while a1 != a2:
-            a1 = getpass.getpass('Enter the %s: ' % question_str)
-            a2 = getpass.getpass('Verify the %s: ' % question_str)
-            if a1 != a2:
-                print('The %s did not match.  Please try again.' % question_str)
-
-        return a1
-
     def _read_file(self, filename: str, password: str = '') -> dict:
         """ Reads the data from filename and returns the account dictionary,
         the encrypted master key, and the decrypted master key.
@@ -279,20 +259,46 @@ class PassFile(object):
         hashed_key = self._hash_name(key)
         self._accounts_dict[hashed_key] = dict_to_crypt(value, self._master_key)
 
-    def __getitem__(self, item: str) -> dict:
-        """ Return the value assigned to item.
+    def accounts(self) -> iter:
+        """ Iterate throuth all the items in _accounts_dict.
 
         """
 
-        return self.get(item)
+        for i in self._accounts_dict.values():
+            yield crypt_to_dict(i, self._master_key)
 
-    def __setitem__(self, item: str, value: dict):
-        """ Set accounts_dict[item] = value
+    def change_pass(self, new_password: str):
+        """ Change the password used to encrypt the master_key.
 
         """
 
-        self.set(item, value)
+        self._encrypted_key = self._encrypt_key(self._master_key, new_password)
 
+    def remove(self, item: str):
+        """ Remove the entry at item.
+
+        """
+
+        self._accounts_dict.pop(self._hash_name(item))
+
+    def convert(self):
+        """ Convert to latest format.
+
+        """
+
+        tmp_accounts_dict = {}
+        for account_hash, account_data in self._accounts_dict.items():
+            account_dict = crypt_to_dict_sha256(account_data,
+                                                password=self._password,
+                                                skip_invalid=True)
+            if account_dict:
+                new_account_data = dict_to_crypt(account_dict, self._master_key)
+            else:
+                raise(Exception("Invalid password.  Can't convert."))
+            account_name = account_dict.get('Account Name', '')
+            new_account_hash = self._hash_name(account_name)
+            tmp_accounts_dict[new_account_hash] = new_account_data
+        self._accounts_dict = tmp_accounts_dict
 
     def __contains__(self, item: str) -> bool:
         """ Checks if accounts_dict has a key of value item.
@@ -318,7 +324,8 @@ class PassFile(object):
         """
 
         try:
-            self._write_file(self._filename, self._accounts_dict, self._encrypted_key)
+            self._write_file(self._filename, self._accounts_dict,
+                             self._encrypted_key)
             return not bool(exc_type)
         except Exception as err:
             print(err)
@@ -475,21 +482,6 @@ def decrypt_sha256(key: bytes, ciphertext: bytes) -> str:
         return ''
 
     return plaintext
-
-
-def list_to_dict(key_val_list: list, key_val_seperator: str = '=') -> dict:
-    """ Turns a ['key=val'] list into a dictionary.
-
-    """
-
-    # Return an empty dictionary if key_val_list is empty.
-    if not key_val_list: return {}
-
-    # Split the list values at the '=' into a tuple.
-    split_list = [i.split(key_val_seperator) for i in key_val_list]
-
-    return dict(split_list)
-
 
 
 def bytes_to_str_sha256(bytes_obj: bytes) -> str:
@@ -781,25 +773,11 @@ def convert(args: object) -> int:
     filename = args.filename
     password = get_pass('password', verify=False)
 
-    # Read the accounts dictionary into accounts_dict.
-    accounts_dict, encrypted_key, master_key = read_file(filename, password)
-
-    # Try to convert from old sha256 format to the new format.
     print("Converting...", end='')
-    tmp_accounts_dict = {}
-    for account_hash, account_data in accounts_dict.items():
-        account_dict = crypt_to_dict_sha256(account_data,
-                                            password=password,
-                                            skip_invalid=True)
-        if account_dict:
-            new_account_data = dict_to_crypt(account_dict, master_key)
-        else:
-            raise(Exception("Invalid password.  Can't convert."))
-        account_name = account_dict.get('Account Name', '')
-        new_account_hash = hash_name(account_name)
-        tmp_accounts_dict[new_account_hash] = new_account_data
-    write_file(filename, tmp_accounts_dict, encrypted_key)
+    with PassFile(filename, password) as passfile:
+        passfile.convert()
     print("Done.")
+
     return 0
 
 
@@ -811,22 +789,17 @@ def search(args: object) -> int:
     filename = args.filename
     search_term = args.search_term
 
-    # Read the accounts dictionary into accounts_dict.
-    accounts_dict, _, master_key = read_file(filename)
-
     search_str = search_term.lower()
 
     # String in which to store all matching account information.
     account_str = ''
 
-    for account_data in accounts_dict.values():
-        # Search throuth every account.
-        account_dict = crypt_to_dict(account_data, master_key)
-
-        # The string representation of a dict is good enough for
-        # searching in.
-        if search_str in str(account_dict):
-            account_str += '\n' + dict_to_str(account_dict)
+    with PassFile(filename) as passfile:
+        for account_dict in passfile.accounts():
+            # The string representation of a dict is good enough for
+            # searching in.
+            if search_str in str(account_dict):
+                account_str += '\n' + dict_to_str(account_dict)
 
     import pydoc
     pydoc.pager(account_str)
@@ -841,18 +814,11 @@ def change_password(args: object) -> int:
 
     filename = args.filename
 
-    # Read the accounts dictionary into accounts_dict.
-    accounts_dict, encrypted_key, master_key = read_file(filename)
+    with PassFile(filename) as passfile:
+        # Change the password.
+        new_password = get_pass('new password')
 
-    # Change the password.
-    new_password = get_pass('new password')
-
-    # Encrypt the master key with the new password.
-    encrypted_key = encrypt_key(master_key, new_password)
-
-    # Write accounts_dict to the password file.
-    write_file(filename, accounts_dict, encrypted_key)
-
+        passfile.change_pass(new_password)
     return 0
 
 
@@ -864,17 +830,8 @@ def remove_account(args: object) -> int:
     filename = args.filename
     account = args.account
 
-    # Read the accounts dictionary into accounts_dict.
-    accounts_dict, encrypted_key, master_key = read_file(filename)
-
-    # Get the sha512 hash of the account name.
-    hashed_account = hash_name(account)
-
-    # Pop the account to be removed.
-    account_data = accounts_dict.pop(hashed_account, '')
-
-    # Don't do anything with the account_data.
-    write_file(filename, accounts_dict, encrypted_key)
+    with PassFile(filename) as passfile:
+        passfile.remove(account)
 
     return 0
 
@@ -892,57 +849,40 @@ def add_account(args: object) -> int:
         print("Invalid account name: 'ALL'")
         return 0
 
-    # Get the sha512 hash of the account name.
-    hashed_account = hash_name(account)
+    with PassFile(filename) as passfile:
+        if account in passfile and args.to == 'to':
+            # Trying to add a duplicate account.
+            print("Account '%s' exists" % account)
+            print("Use 'change' or 'rename' to change it.")
+            return 0
 
-    # Read the accounts dictionary into accounts_dict.
-    accounts_dict, encrypted_key, master_key = read_file(filename)
+        # Put the non-hashed account name in the info dict so it is
+        # not lost.
+        info_dict = {'Account Name': account}
 
-    # Pop the requested account out of the dictionary, so it can be
-    # modified.
-    account_data = accounts_dict.pop(hashed_account, '')
+        account_dict = passfile.get(account)
 
-    if account_data and args.to == 'to':
-        # Trying to add a duplicate account.
-        print("Account '%s' exists" % account)
-        print("Use 'change' or 'rename' to change it.")
-        return 0
+        if args.set:
+            # Add any data to the info dictionary.
+            for i in args.data:
+                key, value = i.split(args.seperator)
 
-    # Decrypt the account data into a dictionary.  (crypt_to_dict
-    # returns an empty dictionary if supplied with an empty string.
-    account_dict = crypt_to_dict(account_data, master_key)
+                # Don't allow the user to set the account name this way.
+                if key.lower() == 'account name': continue
 
-    # Put the non-hashed account name in the info dict so it is
-    # not lost.
-    info_dict = {'Account Name': account}
+                # Remove empty values from the account dict and continue.
+                if not value:
+                    account_dict.pop(key, '')
+                    continue
 
-    if args.set:
-        # Add any data to the info dictionary.
-        for i in args.data:
-            key, value = i.split(args.seperator)
+                # Get the secret value.
+                if value == '{secret}':
+                    value = get_pass('{0} {1}'.format(account, key))
 
-            # Don't allow the user to set the account name this way.
-            if key.lower() == 'account name': continue
+                info_dict[key] = value
 
-            # Remove empty values from the account dict and continue.
-            if not value:
-                account_dict.pop(key)
-                continue
-
-            # Get the secret value.
-            if value == '{secret}':
-                value = get_pass('{0} {1}'.format(account, key))
-
-            info_dict[key] = value
-
-    # Add any changed/new information into account_dict.
-    account_dict.update(info_dict)
-
-    # Encrypt the account_dict, and put it into accounts_dict.
-    accounts_dict[hashed_account] = dict_to_crypt(account_dict, master_key)
-
-    # Write accounts_dict to the password file.
-    write_file(filename, accounts_dict, encrypted_key)
+        account_dict.update(info_dict)
+        passfile.set(account, account_dict)
 
     return 0
 
@@ -958,31 +898,24 @@ def list_info(args: object) -> int:
     filename = args.filename
     account = args.account
 
-    # Read the accounts dictionary into accounts_dict.
-    accounts_dict, _, master_key = read_file(filename)
-    account_str = ''
+    with PassFile(filename) as passfile:
+        account_str = ''
 
-    if account == 'ALL':
-        # List all accounts.
-        for account_data in accounts_dict.values():
-            account_dict = crypt_to_dict(account_data, master_key)
-            if account_dict:
+        if account == 'ALL':
+            # List all accounts.
+            for account_dict in passfile.accounts():
                 account_str += '\n' + dict_to_str(account_dict)
-    else:
-        # Get the sha512 hash of the account name.
-        hashed_account = hash_name(account)
+        else:
+            if account not in passfile:
+                print("Account %s not found." % account)
+                return 0
 
-        account_data = accounts_dict.get(hashed_account, '')
+            account_str = dict_to_str(passfile.get(account))
 
-        # If there was no account data exit.
-        if not account_data:
-            print("Account %s not found." % account)
-            return 0
+        import pydoc
+        pydoc.pager(account_str)
 
-        account_str = dict_to_str(crypt_to_dict(account_data, master_key))
-
-    import pydoc
-    pydoc.pager(account_str)
+    return 0
 
 
 def rename_account(args: object) -> int:
@@ -1001,42 +934,19 @@ def rename_account(args: object) -> int:
         print("Invalid account name: 'ALL'")
         return 0
 
-    # Read the accounts dictionary into accounts_dict.
-    accounts_dict, encrypted_key, master_key = read_file(filename)
+    with PassFile(filename) as passfile:
+        if old_account not in passfile:
+            print("Account '%s' not found.  Can't rename." % old_account)
+            return 0
+        if new_account in passfile:
+            print("Account '%s' already exists.  Can't rename." % new_account)
+            return 0
 
-    # Get the sha512 hash of the new account name.
-    hashed_new_account = hash_name(new_account)
-    # Don't try to rename to an already existent name.
-    if hashed_new_account in accounts_dict:
-        print("Account '%s' already exists.  Can't rename." % new_account)
-        return 0
-
-    # Get the sha512 hash of the old account name.
-    hashed_old_account = hash_name(old_account)
-    # Pop the requested old account out so it can be stored under the
-    # new name.
-    account_data = accounts_dict.pop(hashed_old_account, '')
-    # Don't try to rename nothing.
-    if not account_data:
-        print("Account '%s' not found.  Can't rename." % old_account)
-        return 0
-
-    # Decrypt the account data into a dictionary.  (crypt_to_dict
-    # returns and empty dictionary if supplied with an empty string.
-    account_dict = crypt_to_dict(account_data, master_key)
-    # Change the account name.
-    account_dict['Account Name'] = new_account
-    # Encrypt the account_dict.
-    account_data = dict_to_crypt(account_dict, master_key)
-    # Store the data under the new name.
-    accounts_dict[hashed_new_account] = account_data
-    # Write accounts_dict to the password file.
-    write_file(filename, accounts_dict, encrypted_key)
+        account_dict = passfile.get(old_account)
+        account_dict['Account Name'] = new_account
+        passfile.set(new_account, account_dict)
 
     return 0
-
-
-
 
 
 if __name__ == '__main__':
