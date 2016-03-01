@@ -1,2 +1,3 @@
 *.xz
 *.swp
+__pycache__

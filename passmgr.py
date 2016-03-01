@@ -55,6 +55,276 @@ IV_LEN = AES.block_size
 
 MASTER_KEY_DIGEST = SHA512.new(b'\x00master_key\x00').hexdigest()
 
+
+class PassFile(object):
+    """ An encrypted password file.
+
+    The format is a dictionary where the master key is stored under the key
+    '\x00master_key\x00' and each account name is hashed and used as the key to
+    that accounts encrypted data.  The account data is encrypted with the
+    master key and the hmac of that and the iv is stored at the end of each
+    account info. So it is like this.
+    {
+        hashed(\x00master_key\x00): salt+iv+encryped_master_key,
+        hashed(account_name): iv+encrypted_account_dict+encryped_hmac_key+hmac_digest,
+        ...
+    }
+
+    """
+
+    MASTER_KEY_DIGEST = SHA512.new(b'\x00master_key\x00').hexdigest()
+
+    def __init__(self, filename: str, password: str = '',
+                 pass_func: object = None):
+        """ Open the filename and read out the data.  Decrypt it and allow
+        access.
+
+        """
+
+        self._filename = filename
+        self._password = password
+        if not pass_func:
+            self._ask_pass = get_pass
+        else:
+            self._ask_pass = pass_func
+
+        self._accounts_dict = {}
+        self._encrypted_key = b''
+        self._master_key = b''
+
+        self._read_file(filename, password)
+
+    def _get_pass(self, question_str: str, verify: bool = True) -> str:
+        """ Get a secret and by asking twice to make sure it was inputed
+        correctly.
+
+        """
+
+        if not verify: return getpass.getpass('Enter the %s: ' % question_str)
+
+        a1 = 'a'
+        a2 = 'b'
+
+        # Loop until both entries match.
+        while a1 != a2:
+            a1 = getpass.getpass('Enter the %s: ' % question_str)
+            a2 = getpass.getpass('Verify the %s: ' % question_str)
+            if a1 != a2:
+                print('The %s did not match.  Please try again.' % question_str)
+
+        return a1
+
+    def _read_file(self, filename: str, password: str = '') -> dict:
+        """ Reads the data from filename and returns the account dictionary,
+        the encrypted master key, and the decrypted master key.
+
+        """
+
+        # Read from the file if it exists.
+        with pathlib_path(filename) as pass_file:
+            lzma_data = pass_file.read_bytes() if pass_file.is_file() else b''
+
+        # Get the json data out of the file data or an empty json dict of
+        # the file was empty.
+        if lzma_data:
+            json_data = lzma_decompress(lzma_data).decode()
+        else:
+            json_data = '{}'
+
+        accounts_dict = json_loads(json_data)
+
+        # Pop the master key out of the accounts dictionary so it won't be
+        # operated on or listed.  Also if no master key is found, create
+        # one.
+        encrypted_key = bytes.fromhex(accounts_dict.pop(self.MASTER_KEY_DIGEST, ''))
+
+        if not encrypted_key:
+            if not password:
+                # Get the password to encrypt the master key.
+                password = self._ask_pass('password')
+
+            # Generate the largest key possible.
+            master_key = Random.new().read(KEY_LEN)
+
+            # Encrypt the key.
+            encrypted_key = encrypt_key(master_key, password)
+        else:
+            # Get the password to decrypt the key.
+            password = self._ask_pass('password', verify=False)
+            master_key = self._decrypt_key(encrypted_key, password)
+
+        self._accounts_dict = accounts_dict
+        self._encrypted_key = encrypted_key
+        self._master_key = master_key
+
+    def _write_file(self, filename: str, accounts_dict: dict, 
+                    encrypted_key: bytes):
+        """ Compresses and writes the accounts_dict to the file at filename.
+
+        """
+
+        # Put the master key into the accounts dict.
+        accounts_dict[self.MASTER_KEY_DIGEST] = encrypted_key.hex()
+
+        json_data = json_dumps(accounts_dict)
+
+        lzma_data = lzma_compress(json_data.encode())
+
+        with pathlib_path(filename) as pass_file:
+            pass_file.write_bytes(lzma_data)
+
+    def _verify_key(self, crypted_key: bytes, password: bytes) -> bytes:
+        """ Verifies that password can decrypt crypted_key, and returns the key
+        generated from password that will decrypt crypted_key.
+
+        """
+
+        # Get the salt and iv from the start of the encrypted data.
+        salt = crypted_key[:SALT_LEN]
+
+        # Generate a key and verification key from the password and
+        # salt.
+        crypt_key, auth_key = self._gen_keys(password, salt, dkLen = KEY_LEN * 2)
+
+        if auth_key != crypted_key[-KEY_LEN:]:
+            raise(Exception("Invalid password or file was tampered with."))
+
+        return crypt_key
+
+    def _decrypt_key(self, encrypted_key: bytes, password: str) -> bytes:
+        """ Decrypt a key encrypted with encrypt_key.
+
+        """
+
+        # Verify that the password is correct and/or the file has not
+        # been tampered with.
+        crypt_key = self._verify_key(encrypted_key, password)
+
+        # Decrypt the key.
+        key = simple_decrypt(encrypted_key[SALT_LEN:-KEY_LEN], crypt_key)
+
+        return key
+
+    def _encrypt_key(self, key: bytes, password: str) -> bytes:
+        """ Converts password into a valid key and uses that to encrypt a key.
+        Returns salt + encrypted_key + auth_key where salt is used to produce key
+        material from the password.  That key material is split, and the first half
+        is used to encrypt the key and the second is the auth_key to verify the
+        password when decrypting.
+
+        """
+
+        # Generate a large salt.
+        salt = Random.new().read(SALT_LEN)
+
+        # Generate a key and verification key from the password and
+        # salt.
+        crypt_key, auth_key = gen_keys(password, salt, dkLen = KEY_LEN * 2)
+
+        return salt + simple_encrypt(key, crypt_key) + auth_key
+
+    def _gen_keys(self, password: str, salt: bytes, dkLen: int = KEY_LEN,
+                  iterations: int = 5000) -> tuple:
+        """ Uses a password and PBKDF2 to generate 512-bits of key material.  Then
+        it splits it, and returns a tuple of the first 256-bit for a key, and the
+        second 256-bit block for a verification code.
+
+        """
+
+        # Use SHA512 as the hash method in hmac.
+        prf = lambda p, s: HMAC.new(p, s, SHA512).digest()
+        key_mat = PBKDF2(password.encode(), salt, dkLen=dkLen, count=iterations,
+                        prf=prf)
+        # The encryption key is the first 256-bits of material.
+        crypt_key = key_mat[:KEY_LEN]
+        # The second 256-bits is used to verify the key and password.
+        auth_key = key_mat[KEY_LEN:]
+
+        return crypt_key, auth_key
+
+    def _hash_name(self, name: str) -> bytes:
+        """ Hashes name and returns the result.
+
+        """
+
+        return SHA512.new(name.encode()).hexdigest()
+
+    def update_item(self, item: str, item_dict: dict):
+        """ Update the dictionary pointed to by item with the values in
+        item_dict.
+
+        """
+
+        tmp_dict = self.get(item)
+        tmp_dict.update(item_dict)
+        self.set(item, tmp_dict)
+
+    def get(self, key: str, default: dict = {}) -> dict:
+        """ Return the value from accounts_dict associated with key.
+
+        """
+
+        hashed_key = self._hash_name(key)
+
+        if hashed_key not in self._accounts_dict:
+            return default
+
+        return crypt_to_dict(self._accounts_dict[hashed_key], self._master_key)
+
+    def set(self, key: str, value: dict):
+        """ Set the value associated with key.
+
+        """
+
+        hashed_key = self._hash_name(key)
+        self._accounts_dict[hashed_key] = dict_to_crypt(value, self._master_key)
+
+    def __getitem__(self, item: str) -> dict:
+        """ Return the value assigned to item.
+
+        """
+
+        return self.get(item)
+
+    def __setitem__(self, item: str, value: dict):
+        """ Set accounts_dict[item] = value
+
+        """
+
+        self.set(item, value)
+
+
+    def __contains__(self, item: str) -> bool:
+        """ Checks if accounts_dict has a key of value item.
+
+        """
+
+        return self._hash_name(item) in self._accounts_dict
+
+    def __enter__(self):
+        """ Provides the ability to use pythons with statement.
+
+        """
+
+        try:
+            return self
+        except Exception as err:
+            print(err)
+            return None
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        """ Close the file when finished.
+
+        """
+
+        try:
+            self._write_file(self._filename, self._accounts_dict, self._encrypted_key)
+            return not bool(exc_type)
+        except Exception as err:
+            print(err)
+            return False
+
+
 def PKCS7_pad(data: bytes, multiple: int) -> bytes:
     """ Pad the data using the PKCS#7 method.
 
@@ -277,7 +547,21 @@ def read_file(filename: str, password: str = '') -> tuple:
     # operated on or listed.  Also if no master key is found, create
     # one.
     encrypted_key = bytes.fromhex(accounts_dict.pop(MASTER_KEY_DIGEST, ''))
-    encrypted_key, master_key = get_master_key(encrypted_key, password)
+
+    if not encrypted_key:
+        if not password:
+            # Get the password to encrypt the master key.
+            password = get_pass('password')
+
+        # Generate the largest key possible.
+        master_key = Random.new().read(KEY_LEN)
+
+        # Encrypt the key.
+        encrypted_key = encrypt_key(master_key, password)
+    else:
+        # Get the password to decrypt the key.
+        password = get_pass('password', verify=False)
+        master_key = decrypt_key(encrypted_key, password)
 
     return accounts_dict, encrypted_key, master_key
 
@@ -427,39 +711,27 @@ def gen_keys(password: str, salt: bytes, dkLen: int = KEY_LEN,
     return crypt_key, auth_key
 
 
-def get_master_key(encrypted_key: bytes = b'', password: str = '') -> tuple:
-    """ Decrypt or create a aes key.  Returns both the encrypted key and
-    decrypted key.
+def decrypt_key(encrypted_key: bytes, password: str) -> bytes:
+    """ Decrypt a key encrypted with encrypt_key.
 
     """
 
-    if not encrypted_key:
-        if not password:
-            # Get the password to encrypt the master key.
-            password = get_pass('password')
+    # Verify that the password is correct and/or the file has not
+    # been tampered with.
+    crypt_key = verify_key(encrypted_key, password)
 
-        # Generate the largest key possible.
-        key = Random.new().read(KEY_LEN)
+    # Decrypt the key.
+    key = simple_decrypt(encrypted_key[SALT_LEN:-KEY_LEN], crypt_key)
 
-        # Encrypt the key.
-        encrypted_key = encrypt_key(key, password)
-    else:
-        # Get the password to decrypt the key.
-        password = get_pass('password', verify=False)
-
-        # Verify that the password is correct and/or the file has not
-        # been tampered with.
-        crypt_key = verify_key(encrypted_key, password)
-
-        # Decrypt the key.
-        key = simple_decrypt(encrypted_key[SALT_LEN:-KEY_LEN], crypt_key)
-
-    return encrypted_key, key
+    return key
 
 
 def encrypt_key(key: bytes, password: str) -> bytes:
-    """ Converts password into a valid key and uses that to encrypt key
-    returning the result.
+    """ Converts password into a valid key and uses that to encrypt a key.
+    Returns salt + encrypted_key + auth_key where salt is used to produce key
+    material from the password.  That key material is split, and the first half
+    is used to encrypt the key and the second is the auth_key to verify the
+    password when decrypting.
 
     """
 
@@ -893,3 +1165,4 @@ if __name__ == '__main__':
         parser.parse_args(['--help'])
 
     func(args)
+
