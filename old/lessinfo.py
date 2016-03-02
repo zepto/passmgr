@@ -766,9 +766,6 @@ def rename_account(args: object) -> int:
     return 0
 
 
-
-
-
 if __name__ == '__main__':
     from argparse import ArgumentParser
 
