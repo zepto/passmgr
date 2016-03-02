@@ -457,8 +457,11 @@ def decrypt_key(encrypted_key: bytes, password: str) -> bytes:
 
 
 def encrypt_key(key: bytes, password: str) -> bytes:
-    """ Converts password into a valid key and uses that to encrypt key
-    returning the result.
+    """ Converts password into a valid key and uses that to encrypt a key.
+    Returns salt + encrypted_key + auth_key where salt is used to produce key
+    material from the password.  That key material is split, and the first half
+    is used to encrypt the key and the second is the auth_key to verify the
+    password when decrypting.
 
     """
 

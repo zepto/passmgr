@@ -1071,8 +1071,6 @@ if __name__ == '__main__':
     try:
         func = args.func
     except AttributeError:
-        print(args)
         parser.parse_args(['--help'])
 
     func(args)
-
