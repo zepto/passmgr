@@ -939,8 +939,7 @@ if __name__ == '__main__':
                         help='Convert from old sha256 format the the new \
                         format.')
     group.add_argument('-x', '--search', dest='search', action='store',
-                        help='Search through all entries. (use with -o to use \
-                        one password)')
+                        help='Search through all entries.')
     parser.add_argument(dest='filename')
     args, leftovers = parser.parse_known_args()
 

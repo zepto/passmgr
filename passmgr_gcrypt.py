@@ -34,13 +34,8 @@ from json import dumps as json_dumps
 import codecs
 import getpass
 from os import environ as os_environ
-
-from Crypto.Cipher import AES
-from Crypto.Hash import SHA512, SHA256
-from Crypto.Protocol.KDF import PBKDF2
-from Crypto import Random
-from Crypto.Hash import HMAC
-
+from ctypes import *
+from ctypes.util import find_library
 
 # Disable writing lesshst file so when searching in the less pager the
 # search terms won't be recorded.
@@ -49,12 +44,291 @@ os_environ['LESSHISTFILE'] = '/dev/null'
 # Use less as the pager.
 os_environ['PAGER'] = '$(which less)'
 
-# Set the salt, iv, and key length
-KEY_LEN = SALT_LEN = AES.key_size[-1]
-IV_LEN = AES.block_size
+gcrypt_name = find_library('gcrypt')
+if not gcrypt_name:
+    raise Exception("gcrypt could not be found")
 
-MASTER_KEY_DIGEST = SHA512.new(b'\x00master_key\x00').hexdigest()
+_gcrypt_lib = cdll.LoadLibrary(gcrypt_name)
 
+gcry_error_t = c_uint
+gcry_err_code_t = c_uint
+gcry_err_source_t = c_uint
+
+# /* Perform various operations defined by CMD. */
+# gcry_error_t gcry_control (enum gcry_ctl_cmds CMD, ...);
+gcry_control = _gcrypt_lib.gcry_control
+# gcry_control.argtypes = [gcry_ctl_cmds, *args]
+gcry_control.restype = c_uint
+
+# /* A generic context object as used by some functions.  */
+# struct gcry_context;
+class gcry_context(Structure): pass
+# typedef struct gcry_context *gcry_ctx_t;
+gcry_ctx_t = POINTER(gcry_context)
+
+gcry_random_bytes_secure = _gcrypt_lib.gcry_random_bytes_secure
+gcry_random_bytes_secure.argtypes = [c_size_t, c_int]
+gcry_random_bytes_secure.restype = c_void_p
+
+GCRY_KDF_PBKDF2 = 34
+GCRY_MD_SHA256  = 8
+GCRY_MD_SHA512  = 10
+GCRY_MAC_HMAC_SHA512        = 103
+GCRY_CIPHER_AES256      = 9
+GCRY_CIPHER_MODE_CBC    = 3  # Cipher block chaining. */
+GCRY_VERY_STRONG_RANDOM = 2
+GCRY_CIPHER_SECURE      = 1  # Allocate in secure memory. */
+GCRY_MAC_FLAG_SECURE = 1  # Allocate all buffers in "secure" memory.  */
+
+
+# /* Derive a key from a passphrase.  */
+# gpg_error_t gcry_kdf_derive (const void *passphrase, size_t passphraselen,
+#                              int algo, int subalgo,
+#                              const void *salt, size_t saltlen,
+#                              unsigned long iterations,
+#                              size_t keysize, void *keybuffer);
+gcry_kdf_derive = _gcrypt_lib.gcry_kdf_derive
+gcry_kdf_derive.argtypes = [c_void_p, c_size_t, c_int, c_int, c_void_p,
+                            c_size_t, c_ulong, c_size_t, c_void_p]
+gcry_kdf_derive.restype = c_int
+
+# /* The data object used to hold a handle to an encryption object.  */
+# struct gcry_mac_handle;
+class gcry_mac_handle(Structure): pass
+# typedef struct gcry_mac_handle *gcry_mac_hd_t;
+gcry_mac_hd_t = POINTER(gcry_mac_handle)
+# gcry_error_t gcry_mac_open (gcry_mac_hd_t *handle, int algo,
+#                             unsigned int flags, gcry_ctx_t ctx);
+gcry_mac_open = _gcrypt_lib.gcry_mac_open
+gcry_mac_open.argtypes = [POINTER(gcry_mac_hd_t), c_int, c_uint, gcry_ctx_t]
+gcry_mac_open.restype = gcry_error_t
+
+# /* Close the MAC handle H and release all resource. */
+# void gcry_mac_close (gcry_mac_hd_t h);
+gcry_mac_close = _gcrypt_lib.gcry_mac_close
+gcry_mac_close.argtypes = [gcry_mac_hd_t]
+gcry_mac_close.restype = None
+
+# /* Set KEY of length KEYLEN bytes for the MAC handle HD.  */
+# gcry_error_t gcry_mac_setkey (gcry_mac_hd_t hd, const void *key,
+#                               size_t keylen);
+gcry_mac_setkey = _gcrypt_lib.gcry_mac_setkey
+gcry_mac_setkey.argtypes = [gcry_mac_hd_t, c_void_p, c_size_t]
+gcry_mac_setkey.restype = gcry_error_t
+
+# /* Set initialization vector IV of length IVLEN for the MAC handle HD. */
+# gcry_error_t gcry_mac_setiv (gcry_mac_hd_t hd, const void *iv,
+#                              size_t ivlen);
+gcry_mac_setiv = _gcrypt_lib.gcry_mac_setiv
+gcry_mac_setiv.argtypes = [gcry_mac_hd_t, c_void_p, c_size_t]
+gcry_mac_setiv.restype = gcry_error_t
+
+# /* Pass LENGTH bytes of data in BUFFER to the MAC object HD so that
+#    it can update the MAC values.  */
+# gcry_error_t gcry_mac_write (gcry_mac_hd_t hd, const void *buffer,
+#                              size_t length);
+gcry_mac_write = _gcrypt_lib.gcry_mac_write
+gcry_mac_write.argtypes = [gcry_mac_hd_t, c_void_p, c_size_t]
+gcry_mac_write.restype = gcry_error_t
+
+# /* Read out the final authentication code from the MAC object HD to BUFFER. */
+# gcry_error_t gcry_mac_read (gcry_mac_hd_t hd, void *buffer, size_t *buflen);
+gcry_mac_read = _gcrypt_lib.gcry_mac_read
+gcry_mac_read.argtypes = [gcry_mac_hd_t, c_void_p, POINTER(c_size_t)]
+gcry_mac_read.restype = gcry_error_t
+
+# /* Verify the final authentication code from the MAC object HD with BUFFER. */
+# gcry_error_t gcry_mac_verify (gcry_mac_hd_t hd, const void *buffer,
+#                               size_t buflen);
+gcry_mac_verify = _gcrypt_lib.gcry_mac_verify
+gcry_mac_verify.argtypes = [gcry_mac_hd_t, c_void_p, c_size_t]
+gcry_mac_verify.restype = gcry_error_t
+
+# /* Retrieve the length in bytes of the MAC yielded by algorithm ALGO. */
+# unsigned int gcry_mac_get_algo_maclen (int algo);
+gcry_mac_get_algo_maclen = _gcrypt_lib.gcry_mac_get_algo_maclen
+gcry_mac_get_algo_maclen.argtypes = [c_int]
+gcry_mac_get_algo_maclen.restype = c_uint
+
+# /* Retrieve the default key length in bytes used with algorithm A. */
+# unsigned int gcry_mac_get_algo_keylen (int algo);
+gcry_mac_get_algo_keylen = _gcrypt_lib.gcry_mac_get_algo_keylen
+gcry_mac_get_algo_keylen.argtypes = [c_int]
+gcry_mac_get_algo_keylen.restype = c_uint
+
+# /* The data object used to hold a handle to an encryption object.  */
+# struct gcry_cipher_handle;
+class gcry_cipher_handle(Structure): pass
+# typedef struct gcry_cipher_handle *gcry_cipher_hd_t;
+gcry_cipher_hd_t = POINTER(gcry_cipher_handle)
+
+# /* Create a handle for algorithm ALGO to be used in MODE.  FLAGS may
+#    be given as an bitwise OR of the gcry_cipher_flags values. */
+# gcry_error_t gcry_cipher_open (gcry_cipher_hd_t *handle,
+#                               int algo, int mode, unsigned int flags);
+gcry_cipher_open = _gcrypt_lib.gcry_cipher_open
+gcry_cipher_open.argtypes = [POINTER(gcry_cipher_hd_t), c_int, c_int, c_uint]
+gcry_cipher_open.restype = gcry_error_t
+
+# /* Close the cioher handle H and release all resource. */
+# void gcry_cipher_close (gcry_cipher_hd_t h);
+gcry_cipher_close = _gcrypt_lib.gcry_cipher_close
+gcry_cipher_close.argtypes = [gcry_cipher_hd_t]
+gcry_cipher_close.restype = None
+
+# /* Encrypt the plaintext of size INLEN in IN using the cipher handle H
+#    into the buffer OUT which has an allocated length of OUTSIZE.  For
+#    most algorithms it is possible to pass NULL for in and 0 for INLEN
+#    and do a in-place decryption of the data provided in OUT.  */
+# gcry_error_t gcry_cipher_encrypt (gcry_cipher_hd_t h,
+#                                   void *out, size_t outsize,
+#                                   const void *in, size_t inlen);
+gcry_cipher_encrypt = _gcrypt_lib.gcry_cipher_encrypt
+gcry_cipher_encrypt.argtypes = [gcry_cipher_hd_t, c_void_p, c_size_t, c_void_p,
+                                c_size_t]
+gcry_cipher_encrypt.restype = gcry_error_t
+
+# /* The counterpart to gcry_cipher_encrypt.  */
+# gcry_error_t gcry_cipher_decrypt (gcry_cipher_hd_t h,
+#                                   void *out, size_t outsize,
+#                                   const void *in, size_t inlen);
+gcry_cipher_decrypt = _gcrypt_lib.gcry_cipher_decrypt
+gcry_cipher_decrypt.argtypes = [gcry_cipher_hd_t, c_void_p, c_size_t, c_void_p,
+                                c_size_t]
+gcry_cipher_decrypt.restype = gcry_error_t
+
+# /* Set KEY of length KEYLEN bytes for the cipher handle HD.  */
+# gcry_error_t gcry_cipher_setkey (gcry_cipher_hd_t hd,
+#                                  const void *key, size_t keylen);
+gcry_cipher_setkey = _gcrypt_lib.gcry_cipher_setkey
+gcry_cipher_setkey.argtypes = [gcry_cipher_hd_t, c_void_p, c_size_t]
+gcry_cipher_setkey.restype = gcry_error_t
+
+
+# /* Set initialization vector IV of length IVLEN for the cipher handle HD. */
+# gcry_error_t gcry_cipher_setiv (gcry_cipher_hd_t hd,
+#                                 const void *iv, size_t ivlen);
+gcry_cipher_setiv = _gcrypt_lib.gcry_cipher_setiv
+gcry_cipher_setiv.argtypes = [gcry_cipher_hd_t, c_void_p, c_size_t]
+gcry_cipher_setiv.restype = gcry_error_t
+
+# /* Retrieve the key length in bytes used with algorithm A. */
+# size_t gcry_cipher_get_algo_keylen (int algo);
+gcry_cipher_get_algo_keylen = _gcrypt_lib.gcry_cipher_get_algo_keylen
+gcry_cipher_get_algo_keylen.argtypes = [c_int]
+gcry_cipher_get_algo_keylen.restype = c_size_t
+
+# /* Retrieve the block length in bytes used with algorithm A. */
+# size_t gcry_cipher_get_algo_blklen (int algo);
+gcry_cipher_get_algo_blklen = _gcrypt_lib.gcry_cipher_get_algo_blklen
+gcry_cipher_get_algo_blklen.argtypes = [c_int]
+gcry_cipher_get_algo_blklen.restype = c_size_t
+
+# /* (Forward declaration.)  */
+# struct gcry_md_context;
+class gcry_md_context(Structure): pass
+
+# /* This object is used to hold a handle to a message digest object.
+#    This structure is private - only to be used by the public gcry_md_*
+#    macros.  */
+# typedef struct gcry_md_handle
+class gcry_md_handle(Structure):
+    _fields_ = [
+            # /* Actual context.  */
+            # struct gcry_md_context *ctx;
+            ('ctx', POINTER(gcry_md_context)),
+
+            # /* Buffer management.  */
+            # int  bufpos;
+            ('bufpos', c_int),
+            # int  bufsize;
+            ('bufsize', c_int),
+            # unsigned char buf[1];
+            ('buf', c_char_p),
+            ]
+gcry_md_hd_t = POINTER(gcry_md_handle)
+
+# /* Create a message digest object for algorithm ALGO.  FLAGS may be
+#    given as an bitwise OR of the gcry_md_flags values.  ALGO may be
+#    given as 0 if the algorithms to be used are later set using
+#    gcry_md_enable.  */
+# gcry_error_t gcry_md_open (gcry_md_hd_t *h, int algo, unsigned int flags);
+gcry_md_open = _gcrypt_lib.gcry_md_open
+gcry_md_open.argtypes = [POINTER(gcry_md_hd_t), c_int, c_uint]
+gcry_md_open.restype = gcry_error_t
+
+# /* Release the message digest object HD.  */
+# void gcry_md_close (gcry_md_hd_t hd);
+gcry_md_close = _gcrypt_lib.gcry_md_close
+gcry_md_close.argtypes = [gcry_md_hd_t]
+gcry_md_close.restype = None
+
+# /* Pass LENGTH bytes of data in BUFFER to the digest object HD so that
+#    it can update the digest values.  This is the actual hash
+#    function. */
+# void gcry_md_write (gcry_md_hd_t hd, const void *buffer, size_t length);
+gcry_md_write = _gcrypt_lib.gcry_md_write
+gcry_md_write.argtypes = [gcry_md_hd_t, c_void_p, c_size_t]
+gcry_md_write.restype = None
+
+# /* Read out the final digest from HD return the digest value for
+#    algorithm ALGO. */
+# unsigned char *gcry_md_read (gcry_md_hd_t hd, int algo);
+gcry_md_read = _gcrypt_lib.gcry_md_read
+gcry_md_read.argtypes = [gcry_md_hd_t, c_int]
+gcry_md_read.restype = POINTER(c_ubyte)
+
+# /* Convenience function to calculate the hash from the data in BUFFER
+#    of size LENGTH using the algorithm ALGO avoiding the creating of a
+#    hash object.  The hash is returned in the caller provided buffer
+#    DIGEST which must be large enough to hold the digest of the given
+#    algorithm. */
+# void gcry_md_hash_buffer (int algo, void *digest,
+#                           const void *buffer, size_t length);
+gcry_md_hash_buffer = _gcrypt_lib.gcry_md_hash_buffer
+gcry_md_hash_buffer.argtypes = [c_int, c_void_p, c_void_p, c_size_t]
+gcry_md_hash_buffer.restype = None
+
+# /* Retrieve the length in bytes of the digest yielded by algorithm
+#    ALGO. */
+# unsigned int gcry_md_get_algo_dlen (int algo);
+gcry_md_get_algo_dlen = _gcrypt_lib.gcry_md_get_algo_dlen
+gcry_md_get_algo_dlen.argtypes = [c_int]
+gcry_md_get_algo_dlen.restype = c_uint
+
+# /* Map the digest algorithm id ALGO to a string representation of the
+#    algorithm name.  For unknown algorithms this function returns
+#    "?". */
+# const char *gcry_md_algo_name (int algo) _GCRY_GCC_ATTR_PURE;
+gcry_md_algo_name = _gcrypt_lib.gcry_md_algo_name
+gcry_md_algo_name.argtypes = [c_int]
+gcry_md_algo_name.restype = c_char_p
+
+# /* Map the algorithm NAME to a digest algorithm Id.  Return 0 if
+#    the algorithm name is not known. */
+# int gcry_md_map_name (const char* name) _GCRY_GCC_ATTR_PURE;
+gcry_md_map_name = _gcrypt_lib.gcry_md_map_name
+gcry_md_map_name.argtypes = [c_char_p]
+gcry_md_map_name.restype = c_int
+
+# /* For use with the HMAC feature, the set MAC key to the KEY of
+#    KEYLEN bytes. */
+# gcry_error_t gcry_md_setkey (gcry_md_hd_t hd, const void *key, size_t keylen);
+gcry_md_setkey = _gcrypt_lib.gcry_md_setkey
+gcry_md_setkey.argtypes = [gcry_md_hd_t, c_void_p, c_size_t]
+gcry_md_setkey.restype = gcry_error_t
+
+gcry_free = _gcrypt_lib.gcry_free
+gcry_free.argtypes = [c_void_p]
+gcry_free.restype = None
+
+gcry_ctx_release = _gcrypt_lib.gcry_ctx_release
+gcry_ctx_release.argtypes = [gcry_ctx_t]
+gcry_ctx_release.restype = None
+
+
+KEY_LEN = SALT_LEN = gcry_cipher_get_algo_keylen(GCRY_CIPHER_AES256)
+IV_LEN = gcry_cipher_get_algo_blklen(GCRY_CIPHER_AES256)
 
 def PKCS7_pad(data: bytes, multiple: int) -> bytes:
     """ Pad the data using the PKCS#7 method.
@@ -73,18 +347,24 @@ def encrypt_sha256(key: bytes, plaintext: str) -> bytes:
 
     """
 
-    valid_key = SHA256.new(key.encode()).digest()
-    iv = Random.new().read(IV_LEN)
+    block_size = gcry_cipher_get_algo_blklen(GCRY_CIPHER_AES256)
+    digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA256)
+    valid_key = bytes((digest_len))
+    gcry_md_hash_buffer(GCRY_MD_SHA256, valid_key, key, len(key))
+    # valid_key = valid_key.hex()
 
-    padded_plaintext = PKCS7_pad(plaintext.encode(), AES.block_size)
+    cipher_handle = gcry_cipher_hd_t()
+    gcry_cipher_open(cipher_handle, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CBC,
+                        GCRY_CIPHER_SECURE )
+    iv = string_at(gcry_random_bytes_secure(block_size, 2), block_size)
+    gcry_cipher_setkey(cipher_handle, valid_key, KEY_LEN)
+    gcry_cipher_setiv(cipher_handle, iv, block_size)
+    pt_len = len(plaintext)
+    ciphertext = bytes((pt_len))
+    gcry_cipher_encrypt(cipher_handle, ciphertext, pt_len, plaintext, pt_len)
+    gcry_cipher_close(cipher_handle)
 
-    encrypt_obj = AES.new(valid_key, AES.MODE_CBC, iv)
-
-    # Put the iv at the start of the cipher text so when it needs to be
-    # decrypted the same iv can be used.
-    ciphertext = iv + encrypt_obj.encrypt(padded_plaintext)
-
-    return ciphertext
+    return iv + ciphertext
 
 
 def decrypt_sha256(key: bytes, ciphertext: bytes) -> str:
@@ -92,14 +372,25 @@ def decrypt_sha256(key: bytes, ciphertext: bytes) -> str:
 
     """
 
-    valid_key = SHA256.new(key.encode()).digest()
+    digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA256)
+    valid_key = bytes((digest_len))
+    gcry_md_hash_buffer(GCRY_MD_SHA256, valid_key, key.encode(), len(key))
 
-    # iv is the first block_size of data at the start of the cipher text.
     iv = ciphertext[:IV_LEN]
     real_ciphertext = ciphertext[IV_LEN:]
 
-    decrypt_obj = AES.new(valid_key, AES.MODE_CBC, iv)
-    padded_plaintext = decrypt_obj.decrypt(real_ciphertext)
+    block_size = gcry_cipher_get_algo_blklen(GCRY_CIPHER_AES256)
+
+    cipher_handle = gcry_cipher_hd_t()
+    gcry_cipher_open(cipher_handle, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CBC,
+                     GCRY_CIPHER_SECURE)
+    gcry_cipher_setkey(cipher_handle, valid_key, KEY_LEN)
+    gcry_cipher_setiv(cipher_handle, iv, block_size)
+    ct_len = len(real_ciphertext)
+    padded_plaintext = bytes((ct_len))
+    gcry_cipher_decrypt(cipher_handle, padded_plaintext, ct_len,
+                        real_ciphertext, ct_len)
+    gcry_cipher_close(cipher_handle)
 
     try:
         # Remove the padding from the plain text.
@@ -220,7 +511,8 @@ class CryptData(object):
 
         """
 
-        return Random.new().read(length)
+        k = gcry_random_bytes_secure(length, 2)
+        return string_at(k, length)
 
     @property
     def encrypted_key(self) -> bytes:
@@ -252,12 +544,21 @@ class CryptData(object):
 
         """
 
-        iv = Random.new().read(IV_LEN)
-        encrypt_obj = AES.new(key, AES.MODE_CBC, iv)
+        data_len = len(data)
 
-        # Put the salt and iv at the start of the cipher text so when it
-        # needs to be decrypted the same salt and iv can be used.
-        return iv + encrypt_obj.encrypt(data)
+        iv = string_at(gcry_random_bytes_secure(IV_LEN, 2), IV_LEN)
+
+        cipher_handle = gcry_cipher_hd_t()
+        gcry_cipher_open(cipher_handle, GCRY_CIPHER_AES256,
+                         GCRY_CIPHER_MODE_CBC, GCRY_CIPHER_SECURE)
+        gcry_cipher_setkey(cipher_handle, key, KEY_LEN)
+        gcry_cipher_setiv(cipher_handle, iv, IV_LEN)
+        ciphertext = bytes((data_len))
+        gcry_cipher_encrypt(cipher_handle, ciphertext, data_len, data,
+                            data_len)
+        gcry_cipher_close(cipher_handle)
+
+        return iv + ciphertext
 
     def _decrypt(self, data: bytes, key: bytes) -> bytes:
         """ Decrypts data using key.  The data should be the concatenation of
@@ -266,10 +567,20 @@ class CryptData(object):
         """
 
         iv = data[:IV_LEN]
-        decrypt_obj = AES.new(key, AES.MODE_CBC, iv)
+        data = data[IV_LEN:]
+        data_len = len(data)
 
-        # Decrypt the AES key.
-        return decrypt_obj.decrypt(data[IV_LEN:])
+        cipher_handle = gcry_cipher_hd_t()
+        gcry_cipher_open(cipher_handle, GCRY_CIPHER_AES256,
+                         GCRY_CIPHER_MODE_CBC, GCRY_CIPHER_SECURE)
+        gcry_cipher_setkey(cipher_handle, key, KEY_LEN)
+        gcry_cipher_setiv(cipher_handle, iv, IV_LEN)
+        decrypted_data = bytes((data_len))
+        gcry_cipher_decrypt(cipher_handle, decrypted_data, data_len, data,
+                            data_len)
+        gcry_cipher_close(cipher_handle)
+
+        return decrypted_data
 
     def _verify_key(self, encrypted_key: bytes, password: bytes) -> bytes:
         """ Verifies that password can decrypt encrypted_key, and returns the
@@ -282,7 +593,8 @@ class CryptData(object):
 
         # Generate a key and verification key from the password and
         # salt.
-        crypt_key, auth_key = self._gen_keys(password, salt, dkLen = KEY_LEN * 2)
+        crypt_key, auth_key = self._gen_keys(password, salt,
+                                             dkLen = KEY_LEN * 2)
 
         if auth_key != encrypted_key[-KEY_LEN:]:
             raise(Exception("Invalid password or file was tampered with."))
@@ -313,7 +625,8 @@ class CryptData(object):
         """
 
         # Generate a large salt.
-        salt = Random.new().read(SALT_LEN)
+        # salt = Random.new().read(SALT_LEN)
+        salt = string_at(gcry_random_bytes_secure(SALT_LEN, 2), SALT_LEN)
 
         # Generate a key and verification key from the password and
         # salt.
@@ -329,10 +642,12 @@ class CryptData(object):
 
         """
 
+        key_mat = bytes((dkLen))
+
         # Use SHA512 as the hash method in hmac.
-        prf = lambda p, s: HMAC.new(p, s, SHA512).digest()
-        key_mat = PBKDF2(password.encode(), salt, dkLen=dkLen, count=iterations,
-                        prf=prf)
+        gcry_kdf_derive(password.encode(), len(password), GCRY_KDF_PBKDF2,
+                        GCRY_MD_SHA512, salt, len(salt), iterations, dkLen,
+                        key_mat)
         # The encryption key is the first 256-bits of material.
         crypt_key = key_mat[:KEY_LEN]
         # The second 256-bits is used to verify the key and password.
@@ -347,8 +662,10 @@ class CryptData(object):
 
         # Extract the hmac digest and encrypted hmac key from the
         # cipher text
-        hmac_digest = ciphertext[-SHA512.digest_size:]
-        ciphertext = ciphertext[:-SHA512.digest_size]
+        digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA512)
+
+        hmac_digest = ciphertext[-digest_len:]
+        ciphertext = ciphertext[:-digest_len]
         encrypted_hmac_key = ciphertext[-(IV_LEN + KEY_LEN):]
         ciphertext = ciphertext[:-(IV_LEN + KEY_LEN)]
 
@@ -367,11 +684,21 @@ class CryptData(object):
 
         """
 
-        # Re-generate the hmac digest of cipher text.
-        hmac = HMAC.new(key, digestmod=SHA512)
-        hmac.update(data)
+        digest_len = gcry_mac_get_algo_maclen(GCRY_MAC_HMAC_SHA512)
+        digest = bytes((digest_len))
 
-        return hmac.digest()
+        # Re-generate the hmac digest of cipher text.
+        mac_handle = gcry_mac_hd_t()
+        context = gcry_ctx_t()
+        gcry_mac_open(mac_handle, GCRY_MAC_HMAC_SHA512, GCRY_MAC_FLAG_SECURE,
+                      context)
+        gcry_mac_setkey(mac_handle, key, KEY_LEN)
+        gcry_mac_write(mac_handle, data, len(data))
+        gcry_mac_read(mac_handle, digest, c_ulong(digest_len))
+        gcry_mac_close(mac_handle)
+        gcry_ctx_release(context)
+
+        return digest
 
     def encrypt(self, plaintext: str) -> bytes:
         """ encrypt(key, plaintext) ->  Encrypts the plain text using key.
@@ -379,19 +706,18 @@ class CryptData(object):
         """
 
         # Pad the plain text.
-        padded_plaintext = PKCS7_pad(plaintext.encode(), AES.block_size)
+        block_size = gcry_cipher_get_algo_blklen(GCRY_CIPHER_AES256)
+        padded_plaintext = PKCS7_pad(plaintext.encode(), block_size)
 
         # Encrypt it.
         ciphertext = self._encrypt(padded_plaintext, self._key)
 
+        # Generate the largest key we can use.
+        hmac_key = string_at(gcry_random_bytes_secure(KEY_LEN, 2), KEY_LEN)
+
         # Generate an hmac of the cipher text, and put the encrypted key and
         # digest at the end of the cipher text.
-
-        # Generate the largest key we can use.
-        hmac_key = Random.new().read(KEY_LEN)
-
         hmac_digest = self._get_hmac_digest(ciphertext, hmac_key)
-
         return ciphertext + self._encrypt(hmac_key, self._key) + hmac_digest
 
     def decrypt(self, ciphertext: bytes) -> str:
@@ -427,7 +753,8 @@ class PassFile(object):
 
     """
 
-    MASTER_KEY_DIGEST = SHA512.new(b'\x00master_key\x00').hexdigest()
+    # MASTER_KEY_DIGEST = SHA512.new(b'\x00master_key\x00').hexdigest()
+
 
     def __init__(self, filename: str, password: str = '',
                  pass_func: object = get_pass):
@@ -435,6 +762,12 @@ class PassFile(object):
         access.
 
         """
+
+        digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA512)
+        MASTER_KEY_DIGEST = bytes((digest_len))
+        _mkey_ = b'\x00master_key\x00'
+        gcry_md_hash_buffer(GCRY_MD_SHA512, MASTER_KEY_DIGEST, _mkey_, len(_mkey_))
+        self.MASTER_KEY_DIGEST = MASTER_KEY_DIGEST.hex()
 
         self._filename = filename
         self._ask_pass = pass_func
@@ -497,7 +830,11 @@ class PassFile(object):
 
         """
 
-        return SHA512.new(name.encode()).hexdigest()
+        # return SHA512.new(name.encode()).hexdigest()
+        digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA512)
+        name_hash = bytes((digest_len))
+        gcry_md_hash_buffer(GCRY_MD_SHA512, name_hash, name, len(name))
+        return name_hash.hex()
 
     def _crypt_to_dict(self, crypt_data: str) -> dict:
         """ Decrypts crypt_data and returns the json.loads dictionary.
