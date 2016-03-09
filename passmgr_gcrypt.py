@@ -349,7 +349,7 @@ def encrypt_sha256(key: bytes, plaintext: str) -> bytes:
 
     block_size = gcry_cipher_get_algo_blklen(GCRY_CIPHER_AES256)
     digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA256)
-    valid_key = bytes((digest_len))
+    valid_key = bytes(digest_len)
     gcry_md_hash_buffer(GCRY_MD_SHA256, valid_key, key, len(key))
     # valid_key = valid_key.hex()
 
@@ -360,7 +360,7 @@ def encrypt_sha256(key: bytes, plaintext: str) -> bytes:
     gcry_cipher_setkey(cipher_handle, valid_key, KEY_LEN)
     gcry_cipher_setiv(cipher_handle, iv, block_size)
     pt_len = len(plaintext)
-    ciphertext = bytes((pt_len))
+    ciphertext = bytes(pt_len)
     gcry_cipher_encrypt(cipher_handle, ciphertext, pt_len, plaintext, pt_len)
     gcry_cipher_close(cipher_handle)
 
@@ -373,7 +373,7 @@ def decrypt_sha256(key: bytes, ciphertext: bytes) -> str:
     """
 
     digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA256)
-    valid_key = bytes((digest_len))
+    valid_key = bytes(digest_len)
     gcry_md_hash_buffer(GCRY_MD_SHA256, valid_key, key.encode(), len(key))
 
     iv = ciphertext[:IV_LEN]
@@ -387,7 +387,7 @@ def decrypt_sha256(key: bytes, ciphertext: bytes) -> str:
     gcry_cipher_setkey(cipher_handle, valid_key, KEY_LEN)
     gcry_cipher_setiv(cipher_handle, iv, block_size)
     ct_len = len(real_ciphertext)
-    padded_plaintext = bytes((ct_len))
+    padded_plaintext = bytes(ct_len)
     gcry_cipher_decrypt(cipher_handle, padded_plaintext, ct_len,
                         real_ciphertext, ct_len)
     gcry_cipher_close(cipher_handle)
@@ -553,7 +553,7 @@ class CryptData(object):
                          GCRY_CIPHER_MODE_CBC, GCRY_CIPHER_SECURE)
         gcry_cipher_setkey(cipher_handle, key, KEY_LEN)
         gcry_cipher_setiv(cipher_handle, iv, IV_LEN)
-        ciphertext = bytes((data_len))
+        ciphertext = bytes(data_len)
         gcry_cipher_encrypt(cipher_handle, ciphertext, data_len, data,
                             data_len)
         gcry_cipher_close(cipher_handle)
@@ -575,7 +575,7 @@ class CryptData(object):
                          GCRY_CIPHER_MODE_CBC, GCRY_CIPHER_SECURE)
         gcry_cipher_setkey(cipher_handle, key, KEY_LEN)
         gcry_cipher_setiv(cipher_handle, iv, IV_LEN)
-        decrypted_data = bytes((data_len))
+        decrypted_data = bytes(data_len)
         gcry_cipher_decrypt(cipher_handle, decrypted_data, data_len, data,
                             data_len)
         gcry_cipher_close(cipher_handle)
@@ -642,7 +642,7 @@ class CryptData(object):
 
         """
 
-        key_mat = bytes((dkLen))
+        key_mat = bytes(dkLen)
 
         # Use SHA512 as the hash method in hmac.
         gcry_kdf_derive(password.encode(), len(password), GCRY_KDF_PBKDF2,
@@ -685,7 +685,7 @@ class CryptData(object):
         """
 
         digest_len = gcry_mac_get_algo_maclen(GCRY_MAC_HMAC_SHA512)
-        digest = bytes((digest_len))
+        digest = bytes(digest_len)
 
         # Re-generate the hmac digest of cipher text.
         mac_handle = gcry_mac_hd_t()
@@ -764,7 +764,7 @@ class PassFile(object):
         """
 
         digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA512)
-        MASTER_KEY_DIGEST = bytes((digest_len))
+        MASTER_KEY_DIGEST = bytes(digest_len)
         _mkey_ = b'\x00master_key\x00'
         gcry_md_hash_buffer(GCRY_MD_SHA512, MASTER_KEY_DIGEST, _mkey_, len(_mkey_))
         self.MASTER_KEY_DIGEST = MASTER_KEY_DIGEST.hex()
@@ -832,7 +832,7 @@ class PassFile(object):
 
         # return SHA512.new(name.encode()).hexdigest()
         digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA512)
-        name_hash = bytes((digest_len))
+        name_hash = bytes(digest_len)
         gcry_md_hash_buffer(GCRY_MD_SHA512, name_hash, name, len(name))
         return name_hash.hex()
 
