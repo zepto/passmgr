@@ -1293,4 +1293,7 @@ if __name__ == '__main__':
     except AttributeError:
         parser.parse_args(['--help'])
 
-    func(args)
+    try:
+        func(args)
+    except Exception as err:
+        print('Error: "{err}" with file {filename}.'.format(**args.__dict__, err=err))
