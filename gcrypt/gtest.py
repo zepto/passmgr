@@ -1,4 +1,4 @@
-import gcrypt
+# import gcrypt
 from Crypto.Cipher import AES
 from Crypto.Hash import SHA512, SHA256
 from Crypto.Protocol.KDF import PBKDF2
@@ -471,4 +471,13 @@ def test2():
     print(gcry_md_algo_name(GCRY_MD_SHA512))
 
 if __name__ == '__main__':
-    test2()
+    # test2()
+    mdhd = gcry_md_hd_t()
+    dlen = gcry_md_get_algo_dlen(GCRY_MD_SHA512)
+    # d = c_buffer(dlen)
+    d = bytes(dlen)#b'\x00' * dlen
+    s = 'hello.com'
+    print(gcry_md_hash_buffer(GCRY_MD_SHA512, d, s, len(s)))
+    print('hash')
+    print(d.hex())
+    print(SHA512.new(s.encode()).hexdigest())
