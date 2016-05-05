@@ -833,7 +833,7 @@ class PassFile(object):
         # return SHA512.new(name.encode()).hexdigest()
         digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA512)
         name_hash = bytes(digest_len)
-        gcry_md_hash_buffer(GCRY_MD_SHA512, name_hash, name, len(name))
+        gcry_md_hash_buffer(GCRY_MD_SHA512, name_hash, name.encode(), len(name))
         return name_hash.hex()
 
     def _crypt_to_dict(self, crypt_data: str) -> dict:
@@ -1115,6 +1115,27 @@ def add_account(args: object) -> int:
 modify_account = add_account
 
 
+def rehash(args: object) -> int:
+    """ List the info in the account or file.
+
+    """
+
+    filename = args.filename
+
+    with PassFile(filename) as passfile:
+        accounts_list = list(passfile.accounts())
+
+        # List all accounts.
+        for account_dict in accounts_list:
+            account = account_dict['Account Name']
+            if account in passfile:
+                print("Rehashing: ", account)
+                passfile.remove(account)
+                passfile.set(account_dict['Account Name'], account_dict)
+
+    return 0
+
+
 def list_info(args: object) -> int:
     """ List the info in the account or file.
 
@@ -1259,6 +1280,12 @@ if __name__ == '__main__':
                                            SHA256 format the new format.')
     convert_group.add_argument('filename')
     convert_group.set_defaults(func=convert)
+
+    rehash_group = subparsers.add_parser('rehash', help='Convert from old \
+                                         SHA256 format the new format.')
+    rehash_group.add_argument('filename')
+    rehash_group.set_defaults(func=rehash)
+
 
     # List options
     list_group = subparsers.add_parser('list', help='List all info for an \
