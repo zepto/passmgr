@@ -1191,6 +1191,7 @@ def rename_account(args: object) -> int:
         account_dict = passfile.get(old_account)
         account_dict['Account Name'] = new_account
         passfile.set(new_account, account_dict)
+        passfile.remove(old_account)
 
     return 0
 
