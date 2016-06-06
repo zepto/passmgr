@@ -743,6 +743,11 @@ def add_account(args: object) -> int:
             print("Account '%s' exists" % account)
             print("Use 'change' or 'rename' to change it.")
             return 0
+        elif account not in passfile and hasattr(args, 'in'):
+            # Trying to modify a non-existent account.
+            print("Account '%s' does not exist" % account)
+            print("Use 'add' to add it.")
+            return 0
 
         # Put the non-hashed account name in the info dict so it is
         # not lost.
