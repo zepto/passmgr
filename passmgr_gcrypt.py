@@ -1121,7 +1121,7 @@ modify_account = add_account
 
 
 def rehash(args: object) -> int:
-    """ List the info in the account or file.
+    """ Re-hash all the account info.
 
     """
 
@@ -1287,8 +1287,8 @@ if __name__ == '__main__':
     convert_group.add_argument('filename')
     convert_group.set_defaults(func=convert)
 
-    rehash_group = subparsers.add_parser('rehash', help='Convert from old \
-                                         SHA256 format the new format.')
+    rehash_group = subparsers.add_parser('rehash', help='Re-hash all the \
+                                                         account info.')
     rehash_group.add_argument('filename')
     rehash_group.set_defaults(func=rehash)
 

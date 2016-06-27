@@ -477,7 +477,7 @@ if __name__ == '__main__':
     # d = c_buffer(dlen)
     d = bytes(dlen)#b'\x00' * dlen
     s = 'hello.com'
-    print(gcry_md_hash_buffer(GCRY_MD_SHA512, d, s, len(s)))
+    print(gcry_md_hash_buffer(GCRY_MD_SHA512, d, s.encode(), len(s)))
     print('hash')
     print(d.hex())
     print(SHA512.new(s.encode()).hexdigest())
