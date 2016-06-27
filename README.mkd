@@ -6,39 +6,33 @@ A password manager that stores account into in one encrypted file.  The dependen
 Usage
 =====
 
-Add 'account_name' to 'account_file'
-------------------------------------
+###### Add 'account_name' to 'account_file'
 
 `$ python passmgr.py add account_name to account_file set data=value data1={secret}`
 
 Use {secret} as the value to be asked for a password or any other secret you don't want stored in your commandline history or printed to your screen.
 
-View 'account_name' in 'account_file'
--------------------------------------
+###### View 'account_name' in 'account_file'
 
 `$ python passmgr.py list account_name in account_file`
 
 Use ALL (all capitals) as the account name to list the entire account file.
 
-Find 'data' in 'account_file'
------------------------------
+###### Find 'data' in 'account_file'
 
 `$ python passmgr.py find data in account_file`
 
-Modify 'account_name' in 'account_file'
----------------------------------------
+###### Modify 'account_name' in 'account_file'
 
 `$ python passmgr.py modify account_name in account_file set data=new_value data1=`
 
 A blank value removes that data from the account.  Use PASSWORD (all capitals) to change the account file master password.
 
-Rename 'account_name' in 'account_file' to 'new_account'
---------------------------------------------------------
+###### Rename 'account_name' in 'account_file' to 'new_account'
 
 `$ python passmgr.py rename account_name in account_file to new_account`
 
-Remove 'new_account' from 'account_file'
-----------------------------------------
+###### Remove 'new_account' from 'account_file'
 
 `$ python passmgr.py remove new_account from account_file`
 
