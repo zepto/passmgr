@@ -54,6 +54,12 @@ gcry_error_t = c_uint
 gcry_err_code_t = c_uint
 gcry_err_source_t = c_uint
 
+# /* Check that the library fulfills the version requirement.  */
+# const char *gcry_check_version (const char *req_version);
+gcry_check_version = _gcrypt_lib.gcry_check_version
+gcry_check_version.argtypes = [c_char_p]
+gcry_check_version.restype = c_char_p
+
 # /* Perform various operations defined by CMD. */
 # gcry_error_t gcry_control (enum gcry_ctl_cmds CMD, ...);
 gcry_control = _gcrypt_lib.gcry_control
@@ -80,6 +86,9 @@ GCRY_VERY_STRONG_RANDOM = 2
 GCRY_CIPHER_SECURE      = 1  # Allocate in secure memory. */
 GCRY_MAC_FLAG_SECURE = 1  # Allocate all buffers in "secure" memory.  */
 
+GCRYCTL_INITIALIZATION_FINISHED = 38
+GCRYCTL_ANY_INITIALIZATION_P = 40
+GCRYCTL_INIT_SECMEM       = 24
 
 # /* Derive a key from a passphrase.  */
 # gpg_error_t gcry_kdf_derive (const void *passphrase, size_t passphraselen,
@@ -325,6 +334,21 @@ gcry_free.restype = None
 gcry_ctx_release = _gcrypt_lib.gcry_ctx_release
 gcry_ctx_release.argtypes = [gcry_ctx_t]
 gcry_ctx_release.restype = None
+
+def _init_gcrypt():
+    """ Initialize gcrypt.
+
+    """
+
+    if gcry_control(GCRYCTL_ANY_INITIALIZATION_P):
+        return True
+
+    gcry_check_version(None)
+    gcry_control(GCRYCTL_INIT_SECMEM, 32768)
+    gcry_control(GCRYCTL_INITIALIZATION_FINISHED)
+
+    return True
+
 
 
 KEY_LEN = SALT_LEN = gcry_cipher_get_algo_keylen(GCRY_CIPHER_AES256)
@@ -1327,6 +1351,7 @@ if __name__ == '__main__':
         parser.parse_args(['--help'])
 
     try:
+        _init_gcrypt()
         func(args)
     except Exception as err:
         print('Error: "{err}" with file {filename}.'.format(**args.__dict__, err=err))
