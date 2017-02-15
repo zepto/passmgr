@@ -53,20 +53,8 @@ os_environ['PAGER'] = '$(which less)'
 KEY_LEN = SALT_LEN = AES.key_size[-1]
 IV_LEN = AES.block_size
 
-MASTER_KEY_DIGEST = SHA512.new(b'\x00master_key\x00').hexdigest()
 
-
-def PKCS7_pad(data: bytes, multiple: int) -> bytes:
-    """ Pad the data using the PKCS#7 method.
-
-    """
-
-    # Pads byte pad_len to the end of the plain text to make it a
-    # multiple of the multiple.
-    pad_len = multiple - (len(data) % multiple)
-
-    return data + bytes([pad_len]) * pad_len
-
+# Old not good functions.
 
 def encrypt_sha256(key: bytes, plaintext: str) -> bytes:
     """ encrypt(key, plaintext) ->  Encrypts plaintext using key.
@@ -174,6 +162,20 @@ def dict_to_crypt_sha256(data_dict: dict, password: str = '') -> str:
     # Return the string encoded encrypted json dump.
     return bytes_to_str_sha256(encrypt_sha256(password, json_data))
 
+#########################
+
+
+def PKCS7_pad(data: bytes, multiple: int) -> bytes:
+    """ Pad the data using the PKCS#7 method.
+
+    """
+
+    # Pads byte pad_len to the end of the plain text to make it a
+    # multiple of the multiple.
+    pad_len = multiple - (len(data) % multiple)
+
+    return data + bytes([pad_len]) * pad_len
+
 
 def get_pass(question_str: str, verify: bool = True) -> str:
     """ Get a secret optionally ask twice to make sure it was inputted
@@ -255,8 +257,8 @@ class CryptData(object):
         iv = Random.new().read(IV_LEN)
         encrypt_obj = AES.new(key, AES.MODE_CBC, iv)
 
-        # Put the salt and iv at the start of the cipher text so when it
-        # needs to be decrypted the same salt and iv can be used.
+        # Put the iv at the start of the cipher text so when it
+        # needs to be decrypted the same iv can be used.
         return iv + encrypt_obj.encrypt(data)
 
     def _decrypt(self, data: bytes, key: bytes) -> bytes:
@@ -268,7 +270,7 @@ class CryptData(object):
         iv = data[:IV_LEN]
         decrypt_obj = AES.new(key, AES.MODE_CBC, iv)
 
-        # Decrypt the AES key.
+        # Decrypt the data.
         return decrypt_obj.decrypt(data[IV_LEN:])
 
     def _verify_key(self, encrypted_key: bytes, password: bytes) -> bytes:
@@ -282,7 +284,8 @@ class CryptData(object):
 
         # Generate a key and verification key from the password and
         # salt.
-        crypt_key, auth_key = self._gen_keys(password, salt, dkLen = KEY_LEN * 2)
+        crypt_key, auth_key = self._gen_keys(password, salt,
+                                             dkLen = KEY_LEN * 2)
 
         if auth_key != encrypted_key[-KEY_LEN:]:
             raise(Exception("Invalid password or file was tampered with."))
@@ -315,9 +318,9 @@ class CryptData(object):
         # Generate a large salt.
         salt = Random.new().read(SALT_LEN)
 
-        # Generate a key and verification key from the password and
-        # salt.
-        crypt_key, auth_key = self._gen_keys(password, salt, dkLen = KEY_LEN * 2)
+        # Generate a key and verification key from the password and salt.
+        crypt_key, auth_key = self._gen_keys(password, salt,
+                                             dkLen = KEY_LEN * 2)
 
         return salt + self._encrypt(key, crypt_key) + auth_key
 
@@ -331,8 +334,8 @@ class CryptData(object):
 
         # Use SHA512 as the hash method in hmac.
         prf = lambda p, s: HMAC.new(p, s, SHA512).digest()
-        key_mat = PBKDF2(password.encode(), salt, dkLen=dkLen, count=iterations,
-                        prf=prf)
+        key_mat = PBKDF2(password.encode(), salt, dkLen=dkLen,
+                         count=iterations, prf=prf)
         # The encryption key is the first 256-bits of material.
         crypt_key = key_mat[:KEY_LEN]
         # The second 256-bits is used to verify the key and password.
@@ -428,6 +431,7 @@ class PassFile(object):
     """
 
     MASTER_KEY_DIGEST = SHA512.new(b'\x00master_key\x00').hexdigest()
+
 
     def __init__(self, filename: str, password: str = '',
                  pass_func: object = get_pass):
