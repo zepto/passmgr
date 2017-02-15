@@ -993,15 +993,16 @@ class PassFile(object):
         # Pop the master key out of the accounts dictionary so it won't be
         # operated on or listed.  Also if no master key is found, create
         # one.
-        encrypted_key = bytes.fromhex(accounts_dict.pop(self.MASTER_KEY_DIGEST, ''))
+        encrypted_key = bytes.fromhex(accounts_dict.pop(self.MASTER_KEY_DIGEST,
+                                                        ''))
 
         if not encrypted_key:
             if not password:
                 # Get the password to encrypt the master key.
-                password = self._ask_pass('password')
+                password = self._ask_pass(f'password for {filename}')
         else:
             # Get the password to decrypt the key.
-            password = self._ask_pass('password', verify=False)
+            password = self._ask_pass(f'password for {filename}', verify=False)
 
         return CryptData(password, encrypted_key), accounts_dict
 
@@ -1080,12 +1081,22 @@ class PassFile(object):
         self._accounts_dict[account_hash] = self._dict_to_crypt(value)
 
     def accounts(self) -> iter:
-        """ Iterate through all the items in _accounts_dict.
+        """ Iterate through all the items in _accounts_dict, and yield
+        the account dictionaries.
 
         """
 
         for i in self._accounts_dict.values():
             yield self._crypt_to_dict(i)
+
+    def account_names(self) -> iter:
+        """ Iterate through all the items in _accounts_dict, and yield
+        the account names.
+
+        """
+
+        for i in self._accounts_dict.values():
+            yield self._crypt_to_dict(i)['Account Name']
 
     def change_pass(self, new_password: str):
         """ Change the password used to encrypt the master_key.
@@ -1341,8 +1352,9 @@ def list_info(args: object) -> int:
     filename = args.filename
     account = args.account
 
+    account_str = ''
+
     with PassFile(filename) as passfile:
-        account_str = ''
 
         if account == 'ALL':
             # List all accounts.
@@ -1355,8 +1367,8 @@ def list_info(args: object) -> int:
 
             account_str = dict_to_str(passfile.get(account))
 
-        import pydoc
-        pydoc.pager(account_str)
+    import pydoc
+    pydoc.pager(account_str)
 
     return 0
 
@@ -1389,6 +1401,46 @@ def rename_account(args: object) -> int:
         account_dict['Account Name'] = new_account
         passfile.set(new_account, account_dict)
         passfile.remove(old_account)
+
+    return 0
+
+
+def diff(args: object) -> int:
+    """ List the differences between two files.
+
+    """
+
+    from difflib import unified_diff
+    from difflib import ndiff
+    import pydoc
+
+    first_filename = args.first_file
+    second_filename = args.second_file
+
+    print(f"Diff between {first_filename} and {second_filename}")
+
+    first_account_list = []
+    second_account_list = []
+
+    with PassFile(first_filename) as first_passfile:
+        # Sort accounts by name.
+        sorted_accounts = sorted(first_passfile.account_names())
+
+        for account_name in sorted_accounts:
+            account_dict = first_passfile.get(account_name)
+            first_account_list.extend(dict_to_str(account_dict).split('\n'))
+
+    with PassFile(second_filename) as second_passfile:
+        # Sort accounts by name.
+        sorted_accounts = sorted(second_passfile.account_names())
+
+        for account_name in sorted_accounts:
+            account_dict = second_passfile.get(account_name)
+            second_account_list.extend(dict_to_str(account_dict).split('\n'))
+
+    diff_list = list(unified_diff(first_account_list, second_account_list,
+                                  first_filename, second_filename))
+    pydoc.pager('\n'.join(diff_list))
 
     return 0
 
@@ -1512,6 +1564,18 @@ if __name__ == '__main__':
     find_sub_group.add_argument('filename')
     find_group.set_defaults(func=search)
 
+    # Diff options
+    diff_group = subparsers.add_parser('diff',
+                                       help='List the differences between two files.')
+    diff_group.add_argument('first_file', action='store',
+                            help='First file')
+    diff_sub = diff_group.add_subparsers(help='Second file',
+                                         dest='and')
+    diff_sub.required = True
+    diff_sub_group = diff_sub.add_parser('and', help="filename")
+    diff_sub_group.add_argument('second_file')
+    diff_group.set_defaults(func=diff)
+
     args, leftovers = parser.parse_known_args()
     try:
         func = args.func
@@ -1520,6 +1584,6 @@ if __name__ == '__main__':
 
     try:
         _init_gcrypt()
+        func(args)
     except Exception as err:
         print('Error: "{err}" with file {filename}.'.format(**args.__dict__, err=err))
-    func(args)
