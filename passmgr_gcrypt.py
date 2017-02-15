@@ -44,6 +44,8 @@ os_environ['LESSHISTFILE'] = '/dev/null'
 # Use less as the pager.
 os_environ['PAGER'] = '$(which less)'
 
+### Begin gcrypt ctypes declarations. ###
+
 gcrypt_name = find_library('gcrypt')
 if not gcrypt_name:
     raise Exception("gcrypt could not be found")
@@ -79,6 +81,7 @@ gcry_random_bytes_secure.restype = c_void_p
 GCRY_KDF_PBKDF2 = 34
 GCRY_MD_SHA256  = 8
 GCRY_MD_SHA512  = 10
+GCRY_MAC_HMAC_SHA256        = 101,
 GCRY_MAC_HMAC_SHA512        = 103
 GCRY_CIPHER_AES256      = 9
 GCRY_CIPHER_MODE_CBC    = 3  # Cipher block chaining. */
@@ -335,11 +338,19 @@ gcry_ctx_release = _gcrypt_lib.gcry_ctx_release
 gcry_ctx_release.argtypes = [gcry_ctx_t]
 gcry_ctx_release.restype = None
 
+### End gcrypt ctypes declarations. ###
+
+# Set the salt, iv, and key length
+KEY_LEN = SALT_LEN = gcry_cipher_get_algo_keylen(GCRY_CIPHER_AES256)
+IV_LEN = gcry_cipher_get_algo_blklen(GCRY_CIPHER_AES256)
+
+
 def _init_gcrypt():
     """ Initialize gcrypt.
 
     """
 
+    # Skip initialization if already initialized.
     if gcry_control(GCRYCTL_ANY_INITIALIZATION_P):
         return True
 
@@ -350,21 +361,206 @@ def _init_gcrypt():
     return True
 
 
-
-KEY_LEN = SALT_LEN = gcry_cipher_get_algo_keylen(GCRY_CIPHER_AES256)
-IV_LEN = gcry_cipher_get_algo_blklen(GCRY_CIPHER_AES256)
-
-def PKCS7_pad(data: bytes, multiple: int) -> bytes:
-    """ Pad the data using the PKCS#7 method.
+class CipherHandle(object):
+    """ A gcrypt cipher handle.
 
     """
 
-    # Pads byte pad_len to the end of the plain text to make it a
-    # multiple of the multiple.
-    pad_len = multiple - (len(data) % multiple)
+    def __init__(self, key: bytes, iv: bytes, algo: int, mode: int):
+        """ Create and open a gcrypt cipher handle.
 
-    return data + bytes([pad_len]) * pad_len
+        """
 
+
+        self._cipher_handle = gcry_cipher_hd_t()
+
+        gcry_cipher_open(self._cipher_handle, algo, mode, GCRY_CIPHER_SECURE)
+        gcry_cipher_setkey(self._cipher_handle, key, KEY_LEN)
+        gcry_cipher_setiv(self._cipher_handle, iv, IV_LEN)
+
+    def __enter__(self):
+        """ Open a gcrypt cipher handle.
+
+        """
+
+        try:
+            return self._cipher_handle
+        except Exception as err:
+            print(err)
+            return None
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        """ Close the gcrypt cipher handle.
+
+        """
+
+        try:
+            gcry_cipher_close(self._cipher_handle)
+            return not bool(exc_type)
+        except Exception as err:
+            print(err)
+            return False
+
+
+class AES(object):
+    """ AES encrypt/decrypt using gcrypt.
+
+    """
+
+    def __init__(self, key: bytes, iv: bytes, algo: int=GCRY_CIPHER_AES256,
+                 mode: int=GCRY_CIPHER_MODE_CBC):
+        """ Initialize AES object.
+            Default algorithm is AES256
+            Default mode is CBC
+
+        """
+
+        self._settings_tup = (key, iv, algo, mode)
+
+    @classmethod
+    def block_size(self, algo: int=GCRY_CIPHER_AES256) -> int:
+        """ Returns the block size of the algorithm algo.
+            Default algorithm is AES256
+
+        """
+
+        return gcry_cipher_get_algo_blklen(algo)
+
+    def encrypt(self, data: bytes) -> bytes:
+        """ Return the encrypted ciphertext of data.
+
+        """
+
+        data_len = len(data)
+        ciphertext = bytes(data_len)
+
+        with CipherHandle(*self._settings_tup) as cipher_handle:
+            gcry_cipher_encrypt(cipher_handle, ciphertext, data_len, data,
+                                data_len)
+
+        return ciphertext
+
+    def decrypt(self, data: bytes) -> bytes:
+        """ Return the decrypted plaintext of data.
+
+        """
+
+        data_len = len(data)
+        decrypted_data = bytes(data_len)
+
+        with CipherHandle(*self._settings_tup) as cipher_handle:
+            gcry_cipher_decrypt(cipher_handle, decrypted_data, data_len, data,
+                                data_len)
+
+        return decrypted_data
+
+
+class SHA_Base(object):
+    """ Hash data with sha hashing algorithms.
+
+    """
+
+    def __init_subclass__(self):
+        """ Set the digest len based on the subclass.
+
+        """
+
+        self.digest_size = gcry_md_get_algo_dlen(self._ALGO)
+
+
+    @classmethod
+    def digest(self, data: bytes) -> bytes:
+        """ Return the digest of data.
+
+        """
+
+        data_hash = bytes(self.digest_size)
+        gcry_md_hash_buffer(self._ALGO, data_hash, data, len(data))
+
+        return data_hash
+
+
+class SHA512(SHA_Base):
+    """ SHA512 hash object.
+
+    """
+
+    _ALGO = GCRY_MD_SHA512
+    _HMAC = GCRY_MAC_HMAC_SHA512
+
+class SHA256(SHA_Base):
+    """ SHA256 hash object.
+
+    """
+
+    _ALGO = GCRY_MD_SHA256
+    _HMAC = GCRY_MAC_HMAC_SHA256
+
+
+class HMAC(object):
+    """ HMAC data using a digest object and key.
+
+
+    """
+
+    def __init__(self, key: bytes, digest_obj: object):
+        """ Initialize the hmac using key and digest_obj.
+
+        """
+
+        self._key = key
+        self._digest_obj = digest_obj
+        self._data = []
+
+    def update(self, data: bytes):
+        """ Put data into buffer.
+
+        """
+
+        self._data.append(data)
+
+    def digest(self) -> bytes:
+        """ Write the buffer to the hmac and return the digest.
+
+        """
+
+        digest = bytes(self._digest_obj.digest_size)
+
+        # Create mac handle and context.
+        mac_handle = gcry_mac_hd_t()
+        context = gcry_ctx_t()
+
+        # Open the mac with specified settings and in secure memory.
+        gcry_mac_open(mac_handle, self._digest_obj._HMAC, GCRY_MAC_FLAG_SECURE,
+                      context)
+
+        # Set the key.
+        gcry_mac_setkey(mac_handle, self._key, KEY_LEN)
+
+        # Write the buffered data to the hmac.
+        for data in self._data:
+            gcry_mac_write(mac_handle, data, len(data))
+
+        # Read hmac digest into digest buffer.
+        gcry_mac_read(mac_handle, digest,
+                      c_ulong(self._digest_obj.digest_size))
+
+        # Close the mac handle and context.
+        gcry_mac_close(mac_handle)
+        gcry_ctx_release(context)
+
+        return digest
+
+
+def secure_random(length: int) -> bytes:
+    """ Return length bytes of strong secure random data.
+
+    """
+
+    return string_at(gcry_random_bytes_secure(length, 2), length)
+
+
+# Old not good functions.
 
 def encrypt_sha256(key: bytes, plaintext: str) -> bytes:
     """ encrypt(key, plaintext) ->  Encrypts plaintext using key.
@@ -489,6 +685,20 @@ def dict_to_crypt_sha256(data_dict: dict, password: str = '') -> str:
     # Return the string encoded encrypted json dump.
     return bytes_to_str_sha256(encrypt_sha256(password, json_data))
 
+#########################
+
+
+def PKCS7_pad(data: bytes, multiple: int) -> bytes:
+    """ Pad the data using the PKCS#7 method.
+
+    """
+
+    # Pads byte pad_len to the end of the plain text to make it a
+    # multiple of the multiple.
+    pad_len = multiple - (len(data) % multiple)
+
+    return data + bytes([pad_len]) * pad_len
+
 
 def get_pass(question_str: str, verify: bool = True) -> str:
     """ Get a secret optionally ask twice to make sure it was inputted
@@ -535,8 +745,7 @@ class CryptData(object):
 
         """
 
-        k = gcry_random_bytes_secure(length, 2)
-        return string_at(k, length)
+        return secure_random(length)
 
     @property
     def encrypted_key(self) -> bytes:
@@ -568,21 +777,12 @@ class CryptData(object):
 
         """
 
-        data_len = len(data)
+        iv = secure_random(IV_LEN)
+        encrypt_obj = AES(key, iv)
 
-        iv = string_at(gcry_random_bytes_secure(IV_LEN, 2), IV_LEN)
-
-        cipher_handle = gcry_cipher_hd_t()
-        gcry_cipher_open(cipher_handle, GCRY_CIPHER_AES256,
-                         GCRY_CIPHER_MODE_CBC, GCRY_CIPHER_SECURE)
-        gcry_cipher_setkey(cipher_handle, key, KEY_LEN)
-        gcry_cipher_setiv(cipher_handle, iv, IV_LEN)
-        ciphertext = bytes(data_len)
-        gcry_cipher_encrypt(cipher_handle, ciphertext, data_len, data,
-                            data_len)
-        gcry_cipher_close(cipher_handle)
-
-        return iv + ciphertext
+        # Put the iv at the start of the cipher text so when it
+        # needs to be decrypted the same iv can be used.
+        return iv + encrypt_obj.encrypt(data)
 
     def _decrypt(self, data: bytes, key: bytes) -> bytes:
         """ Decrypts data using key.  The data should be the concatenation of
@@ -591,20 +791,10 @@ class CryptData(object):
         """
 
         iv = data[:IV_LEN]
-        data = data[IV_LEN:]
-        data_len = len(data)
+        decrypt_obj = AES(key, iv)
 
-        cipher_handle = gcry_cipher_hd_t()
-        gcry_cipher_open(cipher_handle, GCRY_CIPHER_AES256,
-                         GCRY_CIPHER_MODE_CBC, GCRY_CIPHER_SECURE)
-        gcry_cipher_setkey(cipher_handle, key, KEY_LEN)
-        gcry_cipher_setiv(cipher_handle, iv, IV_LEN)
-        decrypted_data = bytes(data_len)
-        gcry_cipher_decrypt(cipher_handle, decrypted_data, data_len, data,
-                            data_len)
-        gcry_cipher_close(cipher_handle)
-
-        return decrypted_data
+        # Decrypt the data.
+        return decrypt_obj.decrypt(data[IV_LEN:])
 
     def _verify_key(self, encrypted_key: bytes, password: bytes) -> bytes:
         """ Verifies that password can decrypt encrypted_key, and returns the
@@ -649,12 +839,11 @@ class CryptData(object):
         """
 
         # Generate a large salt.
-        # salt = Random.new().read(SALT_LEN)
-        salt = string_at(gcry_random_bytes_secure(SALT_LEN, 2), SALT_LEN)
+        salt = secure_random(SALT_LEN)
 
-        # Generate a key and verification key from the password and
-        # salt.
-        crypt_key, auth_key = self._gen_keys(password, salt, dkLen = KEY_LEN * 2)
+        # Generate a key and verification key from the password and salt.
+        crypt_key, auth_key = self._gen_keys(password, salt,
+                                             dkLen = KEY_LEN * 2)
 
         return salt + self._encrypt(key, crypt_key) + auth_key
 
@@ -686,10 +875,8 @@ class CryptData(object):
 
         # Extract the hmac digest and encrypted hmac key from the
         # cipher text
-        digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA512)
-
-        hmac_digest = ciphertext[-digest_len:]
-        ciphertext = ciphertext[:-digest_len]
+        hmac_digest = ciphertext[-SHA512.digest_size:]
+        ciphertext = ciphertext[:-SHA512.digest_size]
         encrypted_hmac_key = ciphertext[-(IV_LEN + KEY_LEN):]
         ciphertext = ciphertext[:-(IV_LEN + KEY_LEN)]
 
@@ -708,21 +895,11 @@ class CryptData(object):
 
         """
 
-        digest_len = gcry_mac_get_algo_maclen(GCRY_MAC_HMAC_SHA512)
-        digest = bytes(digest_len)
-
         # Re-generate the hmac digest of cipher text.
-        mac_handle = gcry_mac_hd_t()
-        context = gcry_ctx_t()
-        gcry_mac_open(mac_handle, GCRY_MAC_HMAC_SHA512, GCRY_MAC_FLAG_SECURE,
-                      context)
-        gcry_mac_setkey(mac_handle, key, KEY_LEN)
-        gcry_mac_write(mac_handle, data, len(data))
-        gcry_mac_read(mac_handle, digest, c_ulong(digest_len))
-        gcry_mac_close(mac_handle)
-        gcry_ctx_release(context)
+        hmac = HMAC(key, SHA512)
+        hmac.update(data)
 
-        return digest
+        return hmac.digest()
 
     def encrypt(self, plaintext: str) -> bytes:
         """ encrypt(key, plaintext) ->  Encrypts the plain text using key.
@@ -730,18 +907,19 @@ class CryptData(object):
         """
 
         # Pad the plain text.
-        block_size = gcry_cipher_get_algo_blklen(GCRY_CIPHER_AES256)
-        padded_plaintext = PKCS7_pad(plaintext.encode(), block_size)
+        padded_plaintext = PKCS7_pad(plaintext.encode(), AES.block_size())
 
         # Encrypt it.
         ciphertext = self._encrypt(padded_plaintext, self._key)
 
-        # Generate the largest key we can use.
-        hmac_key = string_at(gcry_random_bytes_secure(KEY_LEN, 2), KEY_LEN)
-
         # Generate an hmac of the cipher text, and put the encrypted key and
         # digest at the end of the cipher text.
+
+        # Generate the largest key we can use.
+        hmac_key = secure_random(KEY_LEN)
+
         hmac_digest = self._get_hmac_digest(ciphertext, hmac_key)
+
         return ciphertext + self._encrypt(hmac_key, self._key) + hmac_digest
 
     def decrypt(self, ciphertext: bytes) -> str:
@@ -777,7 +955,7 @@ class PassFile(object):
 
     """
 
-    # MASTER_KEY_DIGEST = SHA512.new(b'\x00master_key\x00').hexdigest()
+    MASTER_KEY_DIGEST = SHA512.digest(b'\x00master_key\x00').hex()
 
 
     def __init__(self, filename: str, password: str = '',
@@ -786,12 +964,6 @@ class PassFile(object):
         access.
 
         """
-
-        digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA512)
-        MASTER_KEY_DIGEST = bytes(digest_len)
-        _mkey_ = b'\x00master_key\x00'
-        gcry_md_hash_buffer(GCRY_MD_SHA512, MASTER_KEY_DIGEST, _mkey_, len(_mkey_))
-        self.MASTER_KEY_DIGEST = MASTER_KEY_DIGEST.hex()
 
         self._filename = filename
         self._ask_pass = pass_func
@@ -854,11 +1026,7 @@ class PassFile(object):
 
         """
 
-        # return SHA512.new(name.encode()).hexdigest()
-        digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA512)
-        name_hash = bytes(digest_len)
-        gcry_md_hash_buffer(GCRY_MD_SHA512, name_hash, name.encode(), len(name))
-        return name_hash.hex()
+        return SHA512.digest(name.encode()).hex()
 
     def _crypt_to_dict(self, crypt_data: str) -> dict:
         """ Decrypts crypt_data and returns the json.loads dictionary.
@@ -1352,6 +1520,6 @@ if __name__ == '__main__':
 
     try:
         _init_gcrypt()
-        func(args)
     except Exception as err:
         print('Error: "{err}" with file {filename}.'.format(**args.__dict__, err=err))
+    func(args)
