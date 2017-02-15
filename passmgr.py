@@ -741,7 +741,7 @@ def add_account(args: object) -> int:
         if account in passfile and hasattr(args, 'to'):
             # Trying to add a duplicate account.
             print("Account '%s' exists" % account)
-            print("Use 'change' or 'rename' to change it.")
+            print("Use 'modify' or 'rename' to change it.")
             return 0
         elif account not in passfile and hasattr(args, 'in'):
             # Trying to modify a non-existent account.
@@ -781,6 +781,27 @@ def add_account(args: object) -> int:
 
 # Use the add function to change.
 modify_account = add_account
+
+
+def rehash(args: object) -> int:
+    """ Re-hash all the account info.
+
+    """
+
+    filename = args.filename
+
+    with PassFile(filename) as passfile:
+        accounts_list = list(passfile.accounts())
+
+        # List all accounts.
+        for account_dict in accounts_list:
+            account = account_dict['Account Name']
+            if account in passfile:
+                print("Rehashing: ", account)
+                passfile.remove(account)
+                passfile.set(account_dict['Account Name'], account_dict)
+
+    return 0
 
 
 def list_info(args: object) -> int:
@@ -929,6 +950,12 @@ if __name__ == '__main__':
     convert_group.add_argument('filename')
     convert_group.set_defaults(func=convert)
 
+    rehash_group = subparsers.add_parser('rehash', help='Re-hash all the \
+                                                         account info.')
+    rehash_group.add_argument('filename')
+    rehash_group.set_defaults(func=rehash)
+
+
     # List options
     list_group = subparsers.add_parser('list', help='List all info for an \
                                                      account')
@@ -962,4 +989,7 @@ if __name__ == '__main__':
     except AttributeError:
         parser.parse_args(['--help'])
 
-    func(args)
+    try:
+        func(args)
+    except Exception as err:
+        print('Error: "{err}" with file {filename}.'.format(**args.__dict__, err=err))
