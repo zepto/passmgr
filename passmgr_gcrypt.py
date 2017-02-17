@@ -1174,16 +1174,16 @@ def dict_to_str(data_dict: dict) -> str:
     max_key_len = max(len(key) for key in data_dict.keys())
 
     for key, value in data_dict.items():
-        if key == 'Account Name':
-            str_list.insert(1, "{1:<{0}} -> {2}".format(max_key_len,
-                                                        key, value))
-            continue
-
         # Format the info in a list as follows:
         # key (right align by space max_key_len): value
-        str_list.append("{1:<{0}} -> {2}".format(max_key_len,
-                                            key.lower().capitalize(),
-                                            value))
+        line_str = f"{key.lower().title():<{max_key_len}} -> {value}"
+
+        # Put the account name first in the list.
+        if key == 'Account Name':
+            str_list.insert(1, line_str)
+            continue
+
+        str_list.append(line_str)
 
     return '\n'.join(str_list)
 
@@ -1310,7 +1310,7 @@ def add_account(args: object) -> int:
 
                 # Get the secret value.
                 if value == '{secret}':
-                    value = get_pass('{0} {1}'.format(account, key))
+                    value = get_pass(f'{account} {key}')
 
                 info_dict[key] = value
 
@@ -1586,4 +1586,4 @@ if __name__ == '__main__':
         _init_gcrypt()
         func(args)
     except Exception as err:
-        print('Error: "{err}" with file {filename}.'.format(**args.__dict__, err=err))
+        print(f'Error: "{err}" with file {args.filename}.')
