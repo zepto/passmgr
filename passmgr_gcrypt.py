@@ -460,13 +460,14 @@ class SHA_Base(object):
 
     """
 
-    def __init_subclass__(self):
+    def __init_subclass__(self, algo: int, hmac: int):
         """ Set the digest len based on the subclass.
 
         """
 
-        self.digest_size = gcry_md_get_algo_dlen(self._ALGO)
-
+        self._algo = algo
+        self.hmac = hmac
+        self.digest_size = gcry_md_get_algo_dlen(algo)
 
     @classmethod
     def digest(self, data: bytes) -> bytes:
@@ -475,26 +476,25 @@ class SHA_Base(object):
         """
 
         data_hash = bytes(self.digest_size)
-        gcry_md_hash_buffer(self._ALGO, data_hash, data, len(data))
+        gcry_md_hash_buffer(self._algo, data_hash, data, len(data))
 
         return data_hash
 
 
-class SHA512(SHA_Base):
+class SHA512(SHA_Base, algo=GCRY_MD_SHA512, hmac=GCRY_MAC_HMAC_SHA512):
     """ SHA512 hash object.
 
     """
 
-    _ALGO = GCRY_MD_SHA512
-    _HMAC = GCRY_MAC_HMAC_SHA512
+    pass
 
-class SHA256(SHA_Base):
+
+class SHA256(SHA_Base, algo=GCRY_MD_SHA256, hmac=GCRY_MAC_HMAC_SHA256):
     """ SHA256 hash object.
 
     """
 
-    _ALGO = GCRY_MD_SHA256
-    _HMAC = GCRY_MAC_HMAC_SHA256
+    pass
 
 
 class HMAC(object):
@@ -531,7 +531,7 @@ class HMAC(object):
         context = gcry_ctx_t()
 
         # Open the mac with specified settings and in secure memory.
-        gcry_mac_open(mac_handle, self._digest_obj._HMAC, GCRY_MAC_FLAG_SECURE,
+        gcry_mac_open(mac_handle, self._digest_obj.hmac, GCRY_MAC_FLAG_SECURE,
                       context)
 
         # Set the key.
