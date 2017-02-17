@@ -1462,7 +1462,7 @@ if __name__ == '__main__':
                                              should be added.')
     add_sub_group.add_argument('filename')
     file_sub = add_sub_group.add_subparsers(help='Set info=data (e.g. set \
-                                            username=bif', dest='set')
+                                            username=bif)', dest='set')
     file_sub_group = file_sub.add_parser('set', help='Set item info.')
     file_sub_group.add_argument('-s', '--separator', action='store', 
                                 default='=',
@@ -1488,7 +1488,7 @@ if __name__ == '__main__':
     file_sub = modify_sub_group.add_subparsers(help='Set item info.',
                                                dest='set')
     file_sub_group = file_sub.add_parser('set', help='Set info=data (e.g. set \
-                                                     username=bif')
+                                                     username=bif)')
     file_sub_group.add_argument('-s', '--separator', action='store', 
                                 default='=',
                                 help='Set the info separator (default is "=")')
@@ -1566,7 +1566,8 @@ if __name__ == '__main__':
 
     # Diff options
     diff_group = subparsers.add_parser('diff',
-                                       help='List the differences between two files.')
+                                       help='List the differences between two \
+                                             files.')
     diff_group.add_argument('first_file', action='store',
                             help='First file')
     diff_sub = diff_group.add_subparsers(help='Second file',
