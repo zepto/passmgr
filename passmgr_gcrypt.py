@@ -560,31 +560,32 @@ def secure_random(length: int) -> bytes:
     return string_at(gcry_random_bytes_secure(length, 2), length)
 
 
+def PKCS7_pad(data: bytes, multiple: int) -> bytes:
+    """ Pad the data using the PKCS#7 method.
+
+    """
+
+    # Pads byte pad_len to the end of the plain text to make it a
+    # multiple of the multiple.
+    pad_len = multiple - (len(data) % multiple)
+
+    return data + bytes([pad_len]) * pad_len
+
+
 # Old not good functions.
+
 
 def encrypt_sha256(key: bytes, plaintext: str) -> bytes:
     """ encrypt(key, plaintext) ->  Encrypts plaintext using key.
 
     """
 
-    block_size = gcry_cipher_get_algo_blklen(GCRY_CIPHER_AES256)
-    digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA256)
-    valid_key = bytes(digest_len)
-    gcry_md_hash_buffer(GCRY_MD_SHA256, valid_key, key, len(key))
-    # valid_key = valid_key.hex()
+    iv = secure_random(IV_LEN)
+    encrypt_obj = AES(SHA256.digest(key), iv)
 
-    cipher_handle = gcry_cipher_hd_t()
-    gcry_cipher_open(cipher_handle, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CBC,
-                        GCRY_CIPHER_SECURE )
-    iv = string_at(gcry_random_bytes_secure(block_size, 2), block_size)
-    gcry_cipher_setkey(cipher_handle, valid_key, KEY_LEN)
-    gcry_cipher_setiv(cipher_handle, iv, block_size)
-    pt_len = len(plaintext)
-    ciphertext = bytes(pt_len)
-    gcry_cipher_encrypt(cipher_handle, ciphertext, pt_len, plaintext, pt_len)
-    gcry_cipher_close(cipher_handle)
+    padded_plaintext = PKCS7_pad(plaintext.encode(), AES.block_size())
 
-    return iv + ciphertext
+    return iv + encrypt_obj.encrypt(padded_plaintext)
 
 
 def decrypt_sha256(key: bytes, ciphertext: bytes) -> str:
@@ -592,25 +593,11 @@ def decrypt_sha256(key: bytes, ciphertext: bytes) -> str:
 
     """
 
-    digest_len = gcry_md_get_algo_dlen(GCRY_MD_SHA256)
-    valid_key = bytes(digest_len)
-    gcry_md_hash_buffer(GCRY_MD_SHA256, valid_key, key.encode(), len(key))
-
     iv = ciphertext[:IV_LEN]
-    real_ciphertext = ciphertext[IV_LEN:]
+    decrypt_obj = AES(SHA256.digest(key), iv)
 
-    block_size = gcry_cipher_get_algo_blklen(GCRY_CIPHER_AES256)
-
-    cipher_handle = gcry_cipher_hd_t()
-    gcry_cipher_open(cipher_handle, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CBC,
-                     GCRY_CIPHER_SECURE)
-    gcry_cipher_setkey(cipher_handle, valid_key, KEY_LEN)
-    gcry_cipher_setiv(cipher_handle, iv, block_size)
-    ct_len = len(real_ciphertext)
-    padded_plaintext = bytes(ct_len)
-    gcry_cipher_decrypt(cipher_handle, padded_plaintext, ct_len,
-                        real_ciphertext, ct_len)
-    gcry_cipher_close(cipher_handle)
+    # Decrypt the data.
+    padded_plaintext = decrypt_obj.decrypt(ciphertext[IV_LEN:])
 
     try:
         # Remove the padding from the plain text.
@@ -639,7 +626,7 @@ def str_to_bytes_sha256(str_obj: str) -> bytes:
 
 
 def crypt_to_dict_sha256(crypt_data: str, password: str = '',
-                  skip_invalid: bool = True) -> dict:
+                         skip_invalid: bool = True) -> dict:
     """ Decrypts crypt_data and returns the json.loads dictionary.
     If skip_invalid is True then skip decryption of data if the password is
     invalid.
@@ -652,7 +639,8 @@ def crypt_to_dict_sha256(crypt_data: str, password: str = '',
             password = getpass.getpass('Enter the password for decryption: ')
 
         # Convert the data to a bytes object and decrypt it.
-        json_data = decrypt_sha256(password, str_to_bytes_sha256(crypt_data))
+        json_data = decrypt_sha256(password.encode(),
+                                   str_to_bytes_sha256(crypt_data))
 
         # Load the decrypted data with json and return the resulting
         # dictionary.
@@ -683,21 +671,11 @@ def dict_to_crypt_sha256(data_dict: dict, password: str = '') -> str:
         password = get_pass('password for encryption')
 
     # Return the string encoded encrypted json dump.
-    return bytes_to_str_sha256(encrypt_sha256(password, json_data))
+    return bytes_to_str_sha256(encrypt_sha256(password.encode(), json_data))
+
 
 #########################
 
-
-def PKCS7_pad(data: bytes, multiple: int) -> bytes:
-    """ Pad the data using the PKCS#7 method.
-
-    """
-
-    # Pads byte pad_len to the end of the plain text to make it a
-    # multiple of the multiple.
-    pad_len = multiple - (len(data) % multiple)
-
-    return data + bytes([pad_len]) * pad_len
 
 
 def get_pass(question_str: str, verify: bool = True) -> str:
