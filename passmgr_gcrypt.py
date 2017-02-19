@@ -549,6 +549,9 @@ class HMAC(object):
         gcry_mac_close(mac_handle)
         gcry_ctx_release(context)
 
+        # Clear data buffer so it won't be hashed again.
+        self._data = []
+
         return digest
 
 
