@@ -81,8 +81,16 @@ gcry_random_bytes_secure.restype = c_void_p
 GCRY_KDF_PBKDF2 = 34
 GCRY_MD_SHA256  = 8
 GCRY_MD_SHA512  = 10
-GCRY_MAC_HMAC_SHA256        = 101,
+GCRY_MD_SHA3_224      = 312
+GCRY_MD_SHA3_256      = 313
+GCRY_MD_SHA3_384      = 314
+GCRY_MD_SHA3_512      = 315
+GCRY_MAC_HMAC_SHA256        = 101
 GCRY_MAC_HMAC_SHA512        = 103
+GCRY_MAC_HMAC_SHA3_224      = 115
+GCRY_MAC_HMAC_SHA3_256      = 116
+GCRY_MAC_HMAC_SHA3_384      = 117
+GCRY_MAC_HMAC_SHA3_512      = 118
 GCRY_CIPHER_AES256      = 9
 GCRY_CIPHER_MODE_CBC    = 3  # Cipher block chaining. */
 GCRY_VERY_STRONG_RANDOM = 2
@@ -480,6 +488,13 @@ class SHA_Base(object):
 
         return data_hash
 
+
+class SHA3_512(SHA_Base, algo=GCRY_MD_SHA3_512, hmac=GCRY_MAC_HMAC_SHA3_512):
+    """ SHA3_512 hash object.
+
+    """
+
+    pass
 
 class SHA512(SHA_Base, algo=GCRY_MD_SHA512, hmac=GCRY_MAC_HMAC_SHA512):
     """ SHA512 hash object.
