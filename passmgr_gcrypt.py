@@ -951,8 +951,6 @@ class PassFile(object):
 
     """
 
-    MASTER_KEY_DIGEST = SHA512.digest(b'\x00master_key\x00').hex()
-
 
     def __init__(self, filename: str, password: str = '',
                  pass_func: object = get_pass):
@@ -963,6 +961,8 @@ class PassFile(object):
 
         self._filename = filename
         self._ask_pass = pass_func
+
+        self.MASTER_KEY_DIGEST = SHA512.digest(b'\x00master_key\x00').hex()
 
         cryptdata, accounts_dict = self._read_file(filename, password)
         self._cryptdata, self._accounts_dict = cryptdata, accounts_dict
