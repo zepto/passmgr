@@ -702,17 +702,17 @@ def get_pass(question_str: str, verify: bool = True) -> str:
 
     """
 
-    if not verify: return getpass.getpass('Enter the %s: ' % question_str)
+    if not verify: return getpass.getpass(f'Enter the {question_str}: ')
 
     a1 = 'a'
     a2 = 'b'
 
     # Loop until both entries match.
     while a1 != a2:
-        a1 = getpass.getpass('Enter the %s: ' % question_str)
-        a2 = getpass.getpass('Verify the %s: ' % question_str)
+        a1 = getpass.getpass(f'Enter the {question_str}: ')
+        a2 = getpass.getpass(f'Verify the {question_str}: ')
         if a1 != a2:
-            print('The %s did not match.  Please try again.' % question_str)
+            print(f'The {question_str} did not match.  Please try again.')
 
     return a1
 
@@ -1219,7 +1219,7 @@ def search(args: object) -> int:
             # The string representation of a dict is good enough for
             # searching in.
             if search_str in str(account_dict):
-                account_str += '\n' + dict_to_str(account_dict)
+                account_str += f'\n{dict_to_str(account_dict)}'
 
     import pydoc
     pydoc.pager(account_str)
@@ -1276,12 +1276,12 @@ def add_account(args: object) -> int:
     with PassFile(filename) as passfile:
         if account in passfile and hasattr(args, 'to'):
             # Trying to add a duplicate account.
-            print("Account '%s' exists" % account)
+            print(f"Account '{account}' exists")
             print("Use 'modify' or 'rename' to change it.")
             return 0
         elif account not in passfile and hasattr(args, 'in'):
             # Trying to modify a non-existent account.
-            print("Account '%s' does not exist" % account)
+            print(f"Account '{account}' does not exist")
             print("Use 'add' to add it.")
             return 0
 
@@ -1355,10 +1355,10 @@ def list_info(args: object) -> int:
         if account == 'ALL':
             # List all accounts.
             for account_dict in passfile.accounts():
-                account_str += '\n' + dict_to_str(account_dict)
+                account_str += f'\n{dict_to_str(account_dict)}'
         else:
             if account not in passfile:
-                print("Account %s not found." % account)
+                print(f"Account '{account}' not found.")
                 return 0
 
             account_str = dict_to_str(passfile.get(account))
@@ -1387,10 +1387,10 @@ def rename_account(args: object) -> int:
 
     with PassFile(filename) as passfile:
         if old_account not in passfile:
-            print("Account '%s' not found.  Can't rename." % old_account)
+            print(f"Account '{old_account}' not found.  Can't rename.")
             return 0
         if new_account in passfile:
-            print("Account '%s' already exists.  Can't rename." % new_account)
+            print(f"Account '{new_account}' already exists.  Can't rename.")
             return 0
 
         account_dict = passfile.get(old_account)
