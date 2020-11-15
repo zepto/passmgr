@@ -1208,7 +1208,7 @@ def search(args: object) -> int:
 
     filename = args.filename
     search_term = args.search_term
-    search_key = 'Account Name' if args.accounts else ''
+    search_key = 'Account Name' if args.accounts else args.search_key
 
     search_str = search_term.lower()
 
@@ -1219,7 +1219,8 @@ def search(args: object) -> int:
         for account_dict in passfile.accounts():
             # The string representation of a dict is good enough for
             # searching in.
-            if search_str in str(account_dict.get(search_key, account_dict)):
+            if search_str in str(account_dict.get(search_key,
+                                                  '' if search_key else account_dict)):
                 account_str += f'\n{dict_to_str(account_dict)}'
 
     import pydoc
@@ -1554,6 +1555,8 @@ if __name__ == '__main__':
                                        help='Search in the file for a string.')
     find_group.add_argument('-a', '--accounts', action='store_true',
                             help='Search in account names.')
+    find_group.add_argument('-k', '--key', action='store',
+                            help='Search in key.', dest='search_key')
     find_group.add_argument('search_term', action='store',
                             help='What to search for.')
     find_sub = find_group.add_subparsers(help='Specify the file.',
