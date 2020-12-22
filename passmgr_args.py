@@ -402,23 +402,29 @@ def dict_to_str(data_dict: dict) -> str:
 
 
 def get_pass(question_str: str, verify: bool = True) -> str:
-    """ Get a secret and by asking twice to make sure it was inputed correctly.
+    """ Get a secret optionally ask twice to make sure it was inputted
+    correctly.
 
     """
 
-    if not verify: return getpass.getpass('Enter the %s: ' % question_str)
+    try:
 
-    a1 = 'a'
-    a2 = 'b'
+        if not verify: return getpass.getpass(f'Enter the {question_str}: ')
 
-    # Loop until both entries match.
-    while a1 != a2:
-        a1 = getpass.getpass('Enter the %s: ' % question_str)
-        a2 = getpass.getpass('Verify the %s: ' % question_str)
-        if a1 != a2:
-            print('The %s did not match.  Please try again.' % question_str)
+        a1 = 'a'
+        a2 = 'b'
 
-    return a1
+        # Loop until both entries match.
+        while a1 != a2:
+            a1 = getpass.getpass(f'Enter the {question_str}: ')
+            a2 = getpass.getpass(f'Verify the {question_str}: ')
+            if a1 != a2:
+                print(f'The {question_str} did not match.  Please try again.')
+
+        return a1
+    except KeyboardInterrupt:
+        print()
+        raise(SystemExit)
 
 
 def gen_keys(password: str, salt: bytes, dkLen: int = KEY_LEN,

@@ -702,19 +702,24 @@ def get_pass(question_str: str, verify: bool = True) -> str:
 
     """
 
-    if not verify: return getpass.getpass(f'Enter the {question_str}: ')
+    try:
 
-    a1 = 'a'
-    a2 = 'b'
+        if not verify: return getpass.getpass(f'Enter the {question_str}: ')
 
-    # Loop until both entries match.
-    while a1 != a2:
-        a1 = getpass.getpass(f'Enter the {question_str}: ')
-        a2 = getpass.getpass(f'Verify the {question_str}: ')
-        if a1 != a2:
-            print(f'The {question_str} did not match.  Please try again.')
+        a1 = 'a'
+        a2 = 'b'
 
-    return a1
+        # Loop until both entries match.
+        while a1 != a2:
+            a1 = getpass.getpass(f'Enter the {question_str}: ')
+            a2 = getpass.getpass(f'Verify the {question_str}: ')
+            if a1 != a2:
+                print(f'The {question_str} did not match.  Please try again.')
+
+        return a1
+    except KeyboardInterrupt:
+        print()
+        raise(SystemExit)
 
 
 class CryptData(object):
