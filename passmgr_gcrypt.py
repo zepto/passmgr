@@ -19,23 +19,26 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-""" Account manager.  Stores account information in a LZMA compressed file.
-The account info is put in JSON format and each account name is hashed, and the
-data is encrypted using AES-256-CBC encryption.
+"""Account manager.
 
+Stores account information in a LZMA compressed file.  The account info is put
+in JSON format and each account name is hashed, and the data is encrypted using
+AES-256-CBC encryption.
 """
 
 
-from pathlib import Path as pathlib_path
+import codecs
+import ctypes
+import getpass
+from ctypes.util import find_library
+from json import dumps as json_dumps
+from json import loads as json_loads
+from json.decoder import JSONDecodeError
 from lzma import compress as lzma_compress
 from lzma import decompress as lzma_decompress
-from json import loads as json_loads
-from json import dumps as json_dumps
-import codecs
-import getpass
 from os import environ as os_environ
-from ctypes import *
-from ctypes.util import find_library
+from pathlib import Path as pathlib_path
+from typing import Any, Callable, Generator
 
 # Disable writing lesshst file so when searching in the less pager the
 # search terms won't be recorded.
@@ -44,62 +47,68 @@ os_environ['LESSHISTFILE'] = '/dev/null'
 # Use less as the pager.
 os_environ['PAGER'] = '$(which less)'
 
-### Begin gcrypt ctypes declarations. ###
+# Begin gcrypt ctypes declarations. ###
 
 gcrypt_name = find_library('gcrypt')
 if not gcrypt_name:
     raise Exception("gcrypt could not be found")
 
-_gcrypt_lib = cdll.LoadLibrary(gcrypt_name)
+_gcrypt_lib = ctypes.cdll.LoadLibrary(gcrypt_name)
 
-gcry_error_t = c_uint
-gcry_err_code_t = c_uint
-gcry_err_source_t = c_uint
+gcry_error_t = ctypes.c_uint
+gcry_err_code_t = ctypes.c_uint
+gcry_err_source_t = ctypes.c_uint
 
 # /* Check that the library fulfills the version requirement.  */
 # const char *gcry_check_version (const char *req_version);
 gcry_check_version = _gcrypt_lib.gcry_check_version
-gcry_check_version.argtypes = [c_char_p]
-gcry_check_version.restype = c_char_p
+gcry_check_version.argtypes = [ctypes.c_char_p]
+gcry_check_version.restype = ctypes.c_char_p
 
 # /* Perform various operations defined by CMD. */
 # gcry_error_t gcry_control (enum gcry_ctl_cmds CMD, ...);
 gcry_control = _gcrypt_lib.gcry_control
 # gcry_control.argtypes = [gcry_ctl_cmds, *args]
-gcry_control.restype = c_uint
+gcry_control.restype = ctypes.c_uint
+
 
 # /* A generic context object as used by some functions.  */
 # struct gcry_context;
-class gcry_context(Structure): pass
+class gcry_context(ctypes.Structure):
+    """A generic context object as used by some functions."""
+
+    pass
+
+
 # typedef struct gcry_context *gcry_ctx_t;
-gcry_ctx_t = POINTER(gcry_context)
+gcry_ctx_t = ctypes.POINTER(gcry_context)
 
 gcry_random_bytes_secure = _gcrypt_lib.gcry_random_bytes_secure
-gcry_random_bytes_secure.argtypes = [c_size_t, c_int]
-gcry_random_bytes_secure.restype = c_void_p
+gcry_random_bytes_secure.argtypes = [ctypes.c_size_t, ctypes.c_int]
+gcry_random_bytes_secure.restype = ctypes.c_void_p
 
 GCRY_KDF_PBKDF2 = 34
-GCRY_MD_SHA256  = 8
-GCRY_MD_SHA512  = 10
-GCRY_MD_SHA3_224      = 312
-GCRY_MD_SHA3_256      = 313
-GCRY_MD_SHA3_384      = 314
-GCRY_MD_SHA3_512      = 315
-GCRY_MAC_HMAC_SHA256        = 101
-GCRY_MAC_HMAC_SHA512        = 103
-GCRY_MAC_HMAC_SHA3_224      = 115
-GCRY_MAC_HMAC_SHA3_256      = 116
-GCRY_MAC_HMAC_SHA3_384      = 117
-GCRY_MAC_HMAC_SHA3_512      = 118
-GCRY_CIPHER_AES256      = 9
-GCRY_CIPHER_MODE_CBC    = 3  # Cipher block chaining. */
+GCRY_MD_SHA256 = 8
+GCRY_MD_SHA512 = 10
+GCRY_MD_SHA3_224 = 312
+GCRY_MD_SHA3_256 = 313
+GCRY_MD_SHA3_384 = 314
+GCRY_MD_SHA3_512 = 315
+GCRY_MAC_HMAC_SHA256 = 101
+GCRY_MAC_HMAC_SHA512 = 103
+GCRY_MAC_HMAC_SHA3_224 = 115
+GCRY_MAC_HMAC_SHA3_256 = 116
+GCRY_MAC_HMAC_SHA3_384 = 117
+GCRY_MAC_HMAC_SHA3_512 = 118
+GCRY_CIPHER_AES256 = 9
+GCRY_CIPHER_MODE_CBC = 3  # Cipher block chaining. */
 GCRY_VERY_STRONG_RANDOM = 2
-GCRY_CIPHER_SECURE      = 1  # Allocate in secure memory. */
+GCRY_CIPHER_SECURE = 1  # Allocate in secure memory. */
 GCRY_MAC_FLAG_SECURE = 1  # Allocate all buffers in "secure" memory.  */
 
 GCRYCTL_INITIALIZATION_FINISHED = 38
 GCRYCTL_ANY_INITIALIZATION_P = 40
-GCRYCTL_INIT_SECMEM       = 24
+GCRYCTL_INIT_SECMEM = 24
 
 # /* Derive a key from a passphrase.  */
 # gpg_error_t gcry_kdf_derive (const void *passphrase, size_t passphraselen,
@@ -108,19 +117,27 @@ GCRYCTL_INIT_SECMEM       = 24
 #                              unsigned long iterations,
 #                              size_t keysize, void *keybuffer);
 gcry_kdf_derive = _gcrypt_lib.gcry_kdf_derive
-gcry_kdf_derive.argtypes = [c_void_p, c_size_t, c_int, c_int, c_void_p,
-                            c_size_t, c_ulong, c_size_t, c_void_p]
-gcry_kdf_derive.restype = c_int
+gcry_kdf_derive.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                            ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t,
+                            ctypes.c_ulong, ctypes.c_size_t, ctypes.c_void_p]
+gcry_kdf_derive.restype = ctypes.c_int
+
 
 # /* The data object used to hold a handle to an encryption object.  */
 # struct gcry_mac_handle;
-class gcry_mac_handle(Structure): pass
+class gcry_mac_handle(ctypes.Structure):
+    """The data object used to hold a handle to an encryption object."""
+
+    pass
+
+
 # typedef struct gcry_mac_handle *gcry_mac_hd_t;
-gcry_mac_hd_t = POINTER(gcry_mac_handle)
+gcry_mac_hd_t = ctypes.POINTER(gcry_mac_handle)
 # gcry_error_t gcry_mac_open (gcry_mac_hd_t *handle, int algo,
 #                             unsigned int flags, gcry_ctx_t ctx);
 gcry_mac_open = _gcrypt_lib.gcry_mac_open
-gcry_mac_open.argtypes = [POINTER(gcry_mac_hd_t), c_int, c_uint, gcry_ctx_t]
+gcry_mac_open.argtypes = [ctypes.POINTER(gcry_mac_hd_t), ctypes.c_int,
+                          ctypes.c_uint, gcry_ctx_t]
 gcry_mac_open.restype = gcry_error_t
 
 # /* Close the MAC handle H and release all resource. */
@@ -133,14 +150,14 @@ gcry_mac_close.restype = None
 # gcry_error_t gcry_mac_setkey (gcry_mac_hd_t hd, const void *key,
 #                               size_t keylen);
 gcry_mac_setkey = _gcrypt_lib.gcry_mac_setkey
-gcry_mac_setkey.argtypes = [gcry_mac_hd_t, c_void_p, c_size_t]
+gcry_mac_setkey.argtypes = [gcry_mac_hd_t, ctypes.c_void_p, ctypes.c_size_t]
 gcry_mac_setkey.restype = gcry_error_t
 
 # /* Set initialization vector IV of length IVLEN for the MAC handle HD. */
 # gcry_error_t gcry_mac_setiv (gcry_mac_hd_t hd, const void *iv,
 #                              size_t ivlen);
 gcry_mac_setiv = _gcrypt_lib.gcry_mac_setiv
-gcry_mac_setiv.argtypes = [gcry_mac_hd_t, c_void_p, c_size_t]
+gcry_mac_setiv.argtypes = [gcry_mac_hd_t, ctypes.c_void_p, ctypes.c_size_t]
 gcry_mac_setiv.restype = gcry_error_t
 
 # /* Pass LENGTH bytes of data in BUFFER to the MAC object HD so that
@@ -148,46 +165,55 @@ gcry_mac_setiv.restype = gcry_error_t
 # gcry_error_t gcry_mac_write (gcry_mac_hd_t hd, const void *buffer,
 #                              size_t length);
 gcry_mac_write = _gcrypt_lib.gcry_mac_write
-gcry_mac_write.argtypes = [gcry_mac_hd_t, c_void_p, c_size_t]
+gcry_mac_write.argtypes = [gcry_mac_hd_t, ctypes.c_void_p, ctypes.c_size_t]
 gcry_mac_write.restype = gcry_error_t
 
-# /* Read out the final authentication code from the MAC object HD to BUFFER. */
+# /* Read out the final authentication code from the MAC object HD to BUFFER.
 # gcry_error_t gcry_mac_read (gcry_mac_hd_t hd, void *buffer, size_t *buflen);
 gcry_mac_read = _gcrypt_lib.gcry_mac_read
-gcry_mac_read.argtypes = [gcry_mac_hd_t, c_void_p, POINTER(c_size_t)]
+gcry_mac_read.argtypes = [gcry_mac_hd_t, ctypes.c_void_p,
+                          ctypes.POINTER(ctypes.c_size_t)]
 gcry_mac_read.restype = gcry_error_t
 
-# /* Verify the final authentication code from the MAC object HD with BUFFER. */
+# Verify the final authentication code from the MAC object HD with BUFFER.
 # gcry_error_t gcry_mac_verify (gcry_mac_hd_t hd, const void *buffer,
 #                               size_t buflen);
 gcry_mac_verify = _gcrypt_lib.gcry_mac_verify
-gcry_mac_verify.argtypes = [gcry_mac_hd_t, c_void_p, c_size_t]
+gcry_mac_verify.argtypes = [gcry_mac_hd_t, ctypes.c_void_p, ctypes.c_size_t]
 gcry_mac_verify.restype = gcry_error_t
 
 # /* Retrieve the length in bytes of the MAC yielded by algorithm ALGO. */
 # unsigned int gcry_mac_get_algo_maclen (int algo);
 gcry_mac_get_algo_maclen = _gcrypt_lib.gcry_mac_get_algo_maclen
-gcry_mac_get_algo_maclen.argtypes = [c_int]
-gcry_mac_get_algo_maclen.restype = c_uint
+gcry_mac_get_algo_maclen.argtypes = [ctypes.c_int]
+gcry_mac_get_algo_maclen.restype = ctypes.c_uint
 
 # /* Retrieve the default key length in bytes used with algorithm A. */
 # unsigned int gcry_mac_get_algo_keylen (int algo);
 gcry_mac_get_algo_keylen = _gcrypt_lib.gcry_mac_get_algo_keylen
-gcry_mac_get_algo_keylen.argtypes = [c_int]
-gcry_mac_get_algo_keylen.restype = c_uint
+gcry_mac_get_algo_keylen.argtypes = [ctypes.c_int]
+gcry_mac_get_algo_keylen.restype = ctypes.c_uint
 
 # /* The data object used to hold a handle to an encryption object.  */
 # struct gcry_cipher_handle;
-class gcry_cipher_handle(Structure): pass
+
+
+class gcry_cipher_handle(ctypes.Structure):
+    """The data object used to hold a handle to an encryption object."""
+
+    pass
+
+
 # typedef struct gcry_cipher_handle *gcry_cipher_hd_t;
-gcry_cipher_hd_t = POINTER(gcry_cipher_handle)
+gcry_cipher_hd_t = ctypes.POINTER(gcry_cipher_handle)
 
 # /* Create a handle for algorithm ALGO to be used in MODE.  FLAGS may
 #    be given as an bitwise OR of the gcry_cipher_flags values. */
 # gcry_error_t gcry_cipher_open (gcry_cipher_hd_t *handle,
 #                               int algo, int mode, unsigned int flags);
 gcry_cipher_open = _gcrypt_lib.gcry_cipher_open
-gcry_cipher_open.argtypes = [POINTER(gcry_cipher_hd_t), c_int, c_int, c_uint]
+gcry_cipher_open.argtypes = [ctypes.POINTER(gcry_cipher_hd_t), ctypes.c_int,
+                             ctypes.c_int, ctypes.c_uint]
 gcry_cipher_open.restype = gcry_error_t
 
 # /* Close the cioher handle H and release all resource. */
@@ -204,8 +230,9 @@ gcry_cipher_close.restype = None
 #                                   void *out, size_t outsize,
 #                                   const void *in, size_t inlen);
 gcry_cipher_encrypt = _gcrypt_lib.gcry_cipher_encrypt
-gcry_cipher_encrypt.argtypes = [gcry_cipher_hd_t, c_void_p, c_size_t, c_void_p,
-                                c_size_t]
+gcry_cipher_encrypt.argtypes = [gcry_cipher_hd_t, ctypes.c_void_p,
+                                ctypes.c_size_t, ctypes.c_void_p,
+                                ctypes.c_size_t]
 gcry_cipher_encrypt.restype = gcry_error_t
 
 # /* The counterpart to gcry_cipher_encrypt.  */
@@ -213,15 +240,17 @@ gcry_cipher_encrypt.restype = gcry_error_t
 #                                   void *out, size_t outsize,
 #                                   const void *in, size_t inlen);
 gcry_cipher_decrypt = _gcrypt_lib.gcry_cipher_decrypt
-gcry_cipher_decrypt.argtypes = [gcry_cipher_hd_t, c_void_p, c_size_t, c_void_p,
-                                c_size_t]
+gcry_cipher_decrypt.argtypes = [gcry_cipher_hd_t, ctypes.c_void_p,
+                                ctypes.c_size_t, ctypes.c_void_p,
+                                ctypes.c_size_t]
 gcry_cipher_decrypt.restype = gcry_error_t
 
 # /* Set KEY of length KEYLEN bytes for the cipher handle HD.  */
 # gcry_error_t gcry_cipher_setkey (gcry_cipher_hd_t hd,
 #                                  const void *key, size_t keylen);
 gcry_cipher_setkey = _gcrypt_lib.gcry_cipher_setkey
-gcry_cipher_setkey.argtypes = [gcry_cipher_hd_t, c_void_p, c_size_t]
+gcry_cipher_setkey.argtypes = [gcry_cipher_hd_t, ctypes.c_void_p,
+                               ctypes.c_size_t]
 gcry_cipher_setkey.restype = gcry_error_t
 
 
@@ -229,44 +258,58 @@ gcry_cipher_setkey.restype = gcry_error_t
 # gcry_error_t gcry_cipher_setiv (gcry_cipher_hd_t hd,
 #                                 const void *iv, size_t ivlen);
 gcry_cipher_setiv = _gcrypt_lib.gcry_cipher_setiv
-gcry_cipher_setiv.argtypes = [gcry_cipher_hd_t, c_void_p, c_size_t]
+gcry_cipher_setiv.argtypes = [gcry_cipher_hd_t, ctypes.c_void_p,
+                              ctypes.c_size_t]
 gcry_cipher_setiv.restype = gcry_error_t
 
 # /* Retrieve the key length in bytes used with algorithm A. */
 # size_t gcry_cipher_get_algo_keylen (int algo);
 gcry_cipher_get_algo_keylen = _gcrypt_lib.gcry_cipher_get_algo_keylen
-gcry_cipher_get_algo_keylen.argtypes = [c_int]
-gcry_cipher_get_algo_keylen.restype = c_size_t
+gcry_cipher_get_algo_keylen.argtypes = [ctypes.c_int]
+gcry_cipher_get_algo_keylen.restype = ctypes.c_size_t
 
 # /* Retrieve the block length in bytes used with algorithm A. */
 # size_t gcry_cipher_get_algo_blklen (int algo);
 gcry_cipher_get_algo_blklen = _gcrypt_lib.gcry_cipher_get_algo_blklen
-gcry_cipher_get_algo_blklen.argtypes = [c_int]
-gcry_cipher_get_algo_blklen.restype = c_size_t
+gcry_cipher_get_algo_blklen.argtypes = [ctypes.c_int]
+gcry_cipher_get_algo_blklen.restype = ctypes.c_size_t
+
 
 # /* (Forward declaration.)  */
 # struct gcry_md_context;
-class gcry_md_context(Structure): pass
+class gcry_md_context(ctypes.Structure):
+    """Forward declaration."""
+
+    pass
+
 
 # /* This object is used to hold a handle to a message digest object.
 #    This structure is private - only to be used by the public gcry_md_*
 #    macros.  */
 # typedef struct gcry_md_handle
-class gcry_md_handle(Structure):
-    _fields_ = [
-            # /* Actual context.  */
-            # struct gcry_md_context *ctx;
-            ('ctx', POINTER(gcry_md_context)),
+class gcry_md_handle(ctypes.Structure):
+    """This object is used to hold a handle to a message digest object.
 
-            # /* Buffer management.  */
-            # int  bufpos;
-            ('bufpos', c_int),
-            # int  bufsize;
-            ('bufsize', c_int),
-            # unsigned char buf[1];
-            ('buf', c_char_p),
-            ]
-gcry_md_hd_t = POINTER(gcry_md_handle)
+    This structure is private - only to be used by the public gcry_md_*
+    macros.
+    """
+
+    _fields_ = [
+        # /* Actual context.  */
+        # struct gcry_md_context *ctx;
+        ('ctx', ctypes.POINTER(gcry_md_context)),
+
+        # /* Buffer management.  */
+        # int  bufpos;
+        ('bufpos', ctypes.c_int),
+        # int  bufsize;
+        ('bufsize', ctypes.c_int),
+        # unsigned char buf[1];
+        ('buf', ctypes.c_char_p),
+    ]
+
+
+gcry_md_hd_t = ctypes.POINTER(gcry_md_handle)
 
 # /* Create a message digest object for algorithm ALGO.  FLAGS may be
 #    given as an bitwise OR of the gcry_md_flags values.  ALGO may be
@@ -274,7 +317,8 @@ gcry_md_hd_t = POINTER(gcry_md_handle)
 #    gcry_md_enable.  */
 # gcry_error_t gcry_md_open (gcry_md_hd_t *h, int algo, unsigned int flags);
 gcry_md_open = _gcrypt_lib.gcry_md_open
-gcry_md_open.argtypes = [POINTER(gcry_md_hd_t), c_int, c_uint]
+gcry_md_open.argtypes = [ctypes.POINTER(gcry_md_hd_t), ctypes.c_int,
+                         ctypes.c_uint]
 gcry_md_open.restype = gcry_error_t
 
 # /* Release the message digest object HD.  */
@@ -288,15 +332,15 @@ gcry_md_close.restype = None
 #    function. */
 # void gcry_md_write (gcry_md_hd_t hd, const void *buffer, size_t length);
 gcry_md_write = _gcrypt_lib.gcry_md_write
-gcry_md_write.argtypes = [gcry_md_hd_t, c_void_p, c_size_t]
+gcry_md_write.argtypes = [gcry_md_hd_t, ctypes.c_void_p, ctypes.c_size_t]
 gcry_md_write.restype = None
 
 # /* Read out the final digest from HD return the digest value for
 #    algorithm ALGO. */
 # unsigned char *gcry_md_read (gcry_md_hd_t hd, int algo);
 gcry_md_read = _gcrypt_lib.gcry_md_read
-gcry_md_read.argtypes = [gcry_md_hd_t, c_int]
-gcry_md_read.restype = POINTER(c_ubyte)
+gcry_md_read.argtypes = [gcry_md_hd_t, ctypes.c_int]
+gcry_md_read.restype = ctypes.POINTER(ctypes.c_ubyte)
 
 # /* Convenience function to calculate the hash from the data in BUFFER
 #    of size LENGTH using the algorithm ALGO avoiding the creating of a
@@ -306,47 +350,49 @@ gcry_md_read.restype = POINTER(c_ubyte)
 # void gcry_md_hash_buffer (int algo, void *digest,
 #                           const void *buffer, size_t length);
 gcry_md_hash_buffer = _gcrypt_lib.gcry_md_hash_buffer
-gcry_md_hash_buffer.argtypes = [c_int, c_void_p, c_void_p, c_size_t]
+gcry_md_hash_buffer.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
+                                ctypes.c_size_t]
 gcry_md_hash_buffer.restype = None
 
 # /* Retrieve the length in bytes of the digest yielded by algorithm
 #    ALGO. */
 # unsigned int gcry_md_get_algo_dlen (int algo);
 gcry_md_get_algo_dlen = _gcrypt_lib.gcry_md_get_algo_dlen
-gcry_md_get_algo_dlen.argtypes = [c_int]
-gcry_md_get_algo_dlen.restype = c_uint
+gcry_md_get_algo_dlen.argtypes = [ctypes.c_int]
+gcry_md_get_algo_dlen.restype = ctypes.c_uint
 
 # /* Map the digest algorithm id ALGO to a string representation of the
 #    algorithm name.  For unknown algorithms this function returns
 #    "?". */
 # const char *gcry_md_algo_name (int algo) _GCRY_GCC_ATTR_PURE;
 gcry_md_algo_name = _gcrypt_lib.gcry_md_algo_name
-gcry_md_algo_name.argtypes = [c_int]
-gcry_md_algo_name.restype = c_char_p
+gcry_md_algo_name.argtypes = [ctypes.c_int]
+gcry_md_algo_name.restype = ctypes.c_char_p
 
 # /* Map the algorithm NAME to a digest algorithm Id.  Return 0 if
 #    the algorithm name is not known. */
 # int gcry_md_map_name (const char* name) _GCRY_GCC_ATTR_PURE;
 gcry_md_map_name = _gcrypt_lib.gcry_md_map_name
-gcry_md_map_name.argtypes = [c_char_p]
-gcry_md_map_name.restype = c_int
+gcry_md_map_name.argtypes = [ctypes.c_char_p]
+gcry_md_map_name.restype = ctypes.c_int
 
 # /* For use with the HMAC feature, the set MAC key to the KEY of
 #    KEYLEN bytes. */
-# gcry_error_t gcry_md_setkey (gcry_md_hd_t hd, const void *key, size_t keylen);
+# gcry_error_t gcry_md_setkey (gcry_md_hd_t hd, const void *key,
+# size_t keylen);
 gcry_md_setkey = _gcrypt_lib.gcry_md_setkey
-gcry_md_setkey.argtypes = [gcry_md_hd_t, c_void_p, c_size_t]
+gcry_md_setkey.argtypes = [gcry_md_hd_t, ctypes.c_void_p, ctypes.c_size_t]
 gcry_md_setkey.restype = gcry_error_t
 
 gcry_free = _gcrypt_lib.gcry_free
-gcry_free.argtypes = [c_void_p]
+gcry_free.argtypes = [ctypes.c_void_p]
 gcry_free.restype = None
 
 gcry_ctx_release = _gcrypt_lib.gcry_ctx_release
 gcry_ctx_release.argtypes = [gcry_ctx_t]
 gcry_ctx_release.restype = None
 
-### End gcrypt ctypes declarations. ###
+# End gcrypt ctypes declarations. ###
 
 # Set the salt, iv, and key length
 KEY_LEN = SALT_LEN = gcry_cipher_get_algo_keylen(GCRY_CIPHER_AES256)
@@ -354,10 +400,7 @@ IV_LEN = gcry_cipher_get_algo_blklen(GCRY_CIPHER_AES256)
 
 
 def _init_gcrypt():
-    """ Initialize gcrypt.
-
-    """
-
+    """Initialize gcrypt."""
     # Skip initialization if already initialized.
     if gcry_control(GCRYCTL_ANY_INITIALIZATION_P):
         return True
@@ -370,38 +413,26 @@ def _init_gcrypt():
 
 
 class CipherHandle(object):
-    """ A gcrypt cipher handle.
-
-    """
+    """A gcrypt cipher handle."""
 
     def __init__(self, key: bytes, iv: bytes, algo: int, mode: int):
-        """ Create and open a gcrypt cipher handle.
-
-        """
-
-
+        """Create and open a gcrypt cipher handle."""
         self._cipher_handle = gcry_cipher_hd_t()
 
         gcry_cipher_open(self._cipher_handle, algo, mode, GCRY_CIPHER_SECURE)
         gcry_cipher_setkey(self._cipher_handle, key, KEY_LEN)
         gcry_cipher_setiv(self._cipher_handle, iv, IV_LEN)
 
-    def __enter__(self):
-        """ Open a gcrypt cipher handle.
-
-        """
-
+    def __enter__(self) -> Any:
+        """Open a gcrypt cipher handle."""
         try:
             return self._cipher_handle
         except Exception as err:
             print(err)
             return None
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        """ Close the gcrypt cipher handle.
-
-        """
-
+    def __exit__(self, exc_type, *_) -> bool:
+        """Close the gcrypt cipher handle."""
         try:
             gcry_cipher_close(self._cipher_handle)
             return not bool(exc_type)
@@ -411,34 +442,27 @@ class CipherHandle(object):
 
 
 class AES(object):
-    """ AES encrypt/decrypt using gcrypt.
+    """AES encrypt/decrypt using gcrypt."""
 
-    """
+    def __init__(self, key: bytes, iv: bytes, algo: int = GCRY_CIPHER_AES256,
+                 mode: int = GCRY_CIPHER_MODE_CBC):
+        """Initialize AES object.
 
-    def __init__(self, key: bytes, iv: bytes, algo: int=GCRY_CIPHER_AES256,
-                 mode: int=GCRY_CIPHER_MODE_CBC):
-        """ Initialize AES object.
-            Default algorithm is AES256
-            Default mode is CBC
-
+        Default algorithm is AES256
+        Default mode is CBC
         """
-
         self._settings_tup = (key, iv, algo, mode)
 
     @classmethod
-    def block_size(self, algo: int=GCRY_CIPHER_AES256) -> int:
-        """ Returns the block size of the algorithm algo.
-            Default algorithm is AES256
+    def block_size(cls, algo: int = GCRY_CIPHER_AES256) -> int:
+        """Return the block size of the algorithm algo.
 
+        Default algorithm is AES256
         """
-
         return gcry_cipher_get_algo_blklen(algo)
 
     def encrypt(self, data: bytes) -> bytes:
-        """ Return the encrypted ciphertext of data.
-
-        """
-
+        """Return the encrypted ciphertext of data."""
         data_len = len(data)
         ciphertext = bytes(data_len)
 
@@ -449,10 +473,7 @@ class AES(object):
         return ciphertext
 
     def decrypt(self, data: bytes) -> bytes:
-        """ Return the decrypted plaintext of data.
-
-        """
-
+        """Return the decrypted plaintext of data."""
         data_len = len(data)
         decrypted_data = bytes(data_len)
 
@@ -464,81 +485,60 @@ class AES(object):
 
 
 class SHA_Base(object):
-    """ Hash data with sha hashing algorithms.
+    """Hash data with sha hashing algorithms."""
 
-    """
+    hmac: int
+    _algo: int
+    digest_size: Any
 
-    def __init_subclass__(self, algo: int, hmac: int):
-        """ Set the digest len based on the subclass.
-
-        """
-
-        self._algo = algo
-        self.hmac = hmac
-        self.digest_size = gcry_md_get_algo_dlen(algo)
+    def __init_subclass__(cls, algo: int, hmac: int):
+        """Set the digest len based on the subclass."""
+        cls._algo = algo
+        cls.hmac = hmac
+        cls.digest_size = gcry_md_get_algo_dlen(algo)
 
     @classmethod
-    def digest(self, data: bytes) -> bytes:
-        """ Return the digest of data.
-
-        """
-
-        data_hash = bytes(self.digest_size)
-        gcry_md_hash_buffer(self._algo, data_hash, data, len(data))
+    def digest(cls, data: bytes) -> bytes:
+        """Return the digest of data."""
+        data_hash = bytes(cls.digest_size)
+        gcry_md_hash_buffer(cls._algo, data_hash, data, len(data))
 
         return data_hash
 
 
 class SHA3_512(SHA_Base, algo=GCRY_MD_SHA3_512, hmac=GCRY_MAC_HMAC_SHA3_512):
-    """ SHA3_512 hash object.
-
-    """
+    """SHA3_512 hash object."""
 
     pass
 
-class SHA512(SHA_Base, algo=GCRY_MD_SHA512, hmac=GCRY_MAC_HMAC_SHA512):
-    """ SHA512 hash object.
 
-    """
+class SHA512(SHA_Base, algo=GCRY_MD_SHA512, hmac=GCRY_MAC_HMAC_SHA512):
+    """SHA512 hash object."""
 
     pass
 
 
 class SHA256(SHA_Base, algo=GCRY_MD_SHA256, hmac=GCRY_MAC_HMAC_SHA256):
-    """ SHA256 hash object.
-
-    """
+    """SHA256 hash object."""
 
     pass
 
 
 class HMAC(object):
-    """ HMAC data using a digest object and key.
+    """HMAC data using a digest object and key."""
 
-
-    """
-
-    def __init__(self, key: bytes, digest_obj: object):
-        """ Initialize the hmac using key and digest_obj.
-
-        """
-
+    def __init__(self, key: bytes, digest_obj: Any):
+        """Initialize the hmac using key and digest_obj."""
         self._key = key
         self._digest_obj = digest_obj
         self._data = []
 
     def update(self, data: bytes):
-        """ Put data into buffer.
-
-        """
-
+        """Put data into buffer."""
         self._data.append(data)
 
     def digest(self) -> bytes:
-        """ Write the buffer to the hmac and return the digest.
-
-        """
-
+        """Write the buffer to the hmac and return the digest."""
         digest = bytes(self._digest_obj.digest_size)
 
         # Create mac handle and context.
@@ -558,7 +558,7 @@ class HMAC(object):
 
         # Read hmac digest into digest buffer.
         gcry_mac_read(mac_handle, digest,
-                      c_ulong(self._digest_obj.digest_size))
+                      ctypes.c_ulong(self._digest_obj.digest_size))
 
         # Close the mac handle and context.
         gcry_mac_close(mac_handle)
@@ -571,18 +571,12 @@ class HMAC(object):
 
 
 def secure_random(length: int) -> bytes:
-    """ Return length bytes of strong secure random data.
-
-    """
-
-    return string_at(gcry_random_bytes_secure(length, 2), length)
+    """Return length bytes of strong secure random data."""
+    return ctypes.string_at(gcry_random_bytes_secure(length, 2), length)
 
 
 def PKCS7_pad(data: bytes, multiple: int) -> bytes:
-    """ Pad the data using the PKCS#7 method.
-
-    """
-
+    """Pad the data using the PKCS#7 method."""
     # Pads byte pad_len to the end of the plain text to make it a
     # multiple of the multiple.
     pad_len = multiple - (len(data) % multiple)
@@ -594,10 +588,7 @@ def PKCS7_pad(data: bytes, multiple: int) -> bytes:
 
 
 def encrypt_sha256(key: bytes, plaintext: str) -> bytes:
-    """ encrypt(key, plaintext) ->  Encrypts plaintext using key.
-
-    """
-
+    """encrypt(key, plaintext) ->  Encrypts plaintext using key."""
     iv = secure_random(IV_LEN)
     encrypt_obj = AES(SHA256.digest(key), iv)
 
@@ -607,10 +598,7 @@ def encrypt_sha256(key: bytes, plaintext: str) -> bytes:
 
 
 def decrypt_sha256(key: bytes, ciphertext: bytes) -> str:
-    """ decrypt(key, ciphertext) -> Decrypts the cipher text using the key.
-
-    """
-
+    """decrypt(key, ciphertext) -> Decrypts the cipher text using the key."""
     iv = ciphertext[:IV_LEN]
     decrypt_obj = AES(SHA256.digest(key), iv)
 
@@ -628,29 +616,22 @@ def decrypt_sha256(key: bytes, ciphertext: bytes) -> str:
 
 
 def bytes_to_str_sha256(bytes_obj: bytes) -> str:
-    """ Encodes the bytes object using base64, and returns that string value.
-
-    """
-
+    """Encode the bytes object using base64, and return that string value."""
     return codecs.encode(bytes_obj, 'base64').decode()
 
 
 def str_to_bytes_sha256(str_obj: str) -> bytes:
-    """ Decodes a base64 string into a bytes object.
-
-    """
-
+    """Decode a base64 string into a bytes object."""
     return codecs.decode(str_obj.encode(), 'base64')
 
 
 def crypt_to_dict_sha256(crypt_data: str, password: str = '',
                          skip_invalid: bool = True) -> dict:
-    """ Decrypts crypt_data and returns the json.loads dictionary.
+    """Decrypts crypt_data and returns the json.loads dictionary.
+
     If skip_invalid is True then skip decryption of data if the password is
     invalid.
-
     """
-
     while True:
         # Get the password to decrypt the data.
         if not password:
@@ -664,7 +645,7 @@ def crypt_to_dict_sha256(crypt_data: str, password: str = '',
         # dictionary.
         try:
             return json_loads(json_data)
-        except:
+        except JSONDecodeError:
             # Don't loop forever unless asked to.
             if skip_invalid:
                 print('Skipping, because of invalid password.')
@@ -676,11 +657,7 @@ def crypt_to_dict_sha256(crypt_data: str, password: str = '',
 
 
 def dict_to_crypt_sha256(data_dict: dict, password: str = '') -> str:
-    """ Returns the encrypted json dump of data_dict.
-
-    """
-
-
+    """Return the encrypted json dump of data_dict."""
     # Dump the data_dict into json data.
     json_data = json_dumps(data_dict)
 
@@ -695,16 +672,14 @@ def dict_to_crypt_sha256(data_dict: dict, password: str = '') -> str:
 #########################
 
 
-
 def get_pass(question_str: str, verify: bool = True) -> str:
-    """ Get a secret optionally ask twice to make sure it was inputted
-    correctly.
+    """Get password.
 
+    Get a secret optionally ask twice to make sure it was inputted correctly.
     """
-
     try:
-
-        if not verify: return getpass.getpass(f'Enter the {question_str}: ')
+        if not verify:
+            return getpass.getpass(f'Enter the {question_str}: ')
 
         a1 = 'a'
         a2 = 'b'
@@ -723,16 +698,13 @@ def get_pass(question_str: str, verify: bool = True) -> str:
 
 
 class CryptData(object):
-    """ Easily encrypt/decrypt data.  The data is authenticated when it is
-    decrypted.
+    """Easily encrypt/decrypt data.
 
+    The data is authenticated when it is decrypted.
     """
 
     def __init__(self, password: str, encrypted_key: bytes = b''):
-        """ Initialize the data.
-
-        """
-
+        """Initialize the data."""
         if not encrypted_key:
             # Generate the largest key possible.
             self._key = self.create_key(KEY_LEN)
@@ -742,42 +714,29 @@ class CryptData(object):
         self._password = password
 
     def create_key(self, length: int) -> bytes:
-        """ Generates a cryptographic random key of length 'length'.
-
-        """
-
+        """Generate a cryptographic random key of length 'length'."""
         return secure_random(length)
 
     @property
     def encrypted_key(self) -> bytes:
-        """ Returns the encrypted key.
-
-        """
-
+        """Return the encrypted key."""
         return self._encrypt_key(self._key, self._password)
 
     @property
     def password(self) -> str:
-        """ Returns the password.
-
-        """
-
+        """Return the password."""
         return self._password
 
     @password.setter
     def password(self, new_password: str):
-        """ Changes the password used to encrypt the key.
-
-        """
-
+        """Change the password used to encrypt the key."""
         self._password = new_password
 
     def _encrypt(self, data: bytes, key: bytes) -> bytes:
-        """ Returns the AES_CBC encryption of data using key.
+        """Return the AES_CBC encryption of data using key.
+
         The return value is the concatenation of iv + cipher text.
-
         """
-
         iv = secure_random(IV_LEN)
         encrypt_obj = AES(key, iv)
 
@@ -786,30 +745,29 @@ class CryptData(object):
         return iv + encrypt_obj.encrypt(data)
 
     def _decrypt(self, data: bytes, key: bytes) -> bytes:
-        """ Decrypts data using key.  The data should be the concatenation of
-        iv + cipher text.
+        """Decrypt data using key.
 
+        The data should be the concatenation of iv + cipher text.
         """
-
         iv = data[:IV_LEN]
         decrypt_obj = AES(key, iv)
 
         # Decrypt the data.
         return decrypt_obj.decrypt(data[IV_LEN:])
 
-    def _verify_key(self, encrypted_key: bytes, password: bytes) -> bytes:
-        """ Verifies that password can decrypt encrypted_key, and returns the
-        key generated from password that will decrypt encrypted_key.
+    def _verify_key(self, encrypted_key: bytes, password: str) -> bytes:
+        """Verify key.
 
+        Verifies that password can decrypt encrypted_key, and returns the key
+        generated from password that will decrypt encrypted_key.
         """
-
         # Get the salt and iv from the start of the encrypted data.
         salt = encrypted_key[:SALT_LEN]
 
         # Generate a key and verification key from the password and
         # salt.
         crypt_key, auth_key = self._gen_keys(password, salt,
-                                             dkLen = KEY_LEN * 2)
+                                             dkLen=KEY_LEN * 2)
 
         if auth_key != encrypted_key[-KEY_LEN:]:
             raise(Exception("Invalid password or file was tampered with."))
@@ -817,10 +775,7 @@ class CryptData(object):
         return crypt_key
 
     def _decrypt_key(self, encrypted_key: bytes, password: str) -> bytes:
-        """ Decrypt a key encrypted with encrypt_key.
-
-        """
-
+        """Decrypt a key encrypted with encrypt_key."""
         # Verify that the password is correct and/or the file has not
         # been tampered with.
         crypt_key = self._verify_key(encrypted_key, password)
@@ -831,31 +786,29 @@ class CryptData(object):
         return key
 
     def _encrypt_key(self, key: bytes, password: str) -> bytes:
-        """ Converts password into a valid key and uses that to encrypt a key.
+        """Convert password into a valid key and uses that to encrypt a key.
+
         Returns salt + encrypted_key + auth_key where salt is used to produce
         key material from the password.  That key material is split, and the
         first half is used to encrypt the key and the second is the auth_key to
         verify the password when decrypting.
-
         """
-
         # Generate a large salt.
         salt = secure_random(SALT_LEN)
 
         # Generate a key and verification key from the password and salt.
         crypt_key, auth_key = self._gen_keys(password, salt,
-                                             dkLen = KEY_LEN * 2)
+                                             dkLen=KEY_LEN * 2)
 
         return salt + self._encrypt(key, crypt_key) + auth_key
 
     def _gen_keys(self, password: str, salt: bytes, dkLen: int = KEY_LEN,
                   iterations: int = 5000) -> tuple:
-        """ Uses a password and PBKDF2 to generate 512-bits of key material.
+        """Use a password and PBKDF2 to generate 512-bits of key material.
+
         Then it splits it, and returns a tuple of the first 256-bit for a key,
         and the second 256-bit block for a verification code.
-
         """
-
         key_mat = bytes(dkLen)
 
         # Use SHA512 as the hash method in hmac.
@@ -870,10 +823,7 @@ class CryptData(object):
         return crypt_key, auth_key
 
     def _verify(self, ciphertext: bytes) -> bytes:
-        """ Raises an error if the cipher text isn't valid.
-
-        """
-
+        """Raise an error if the cipher text isn't valid."""
         # Extract the hmac digest and encrypted hmac key from the
         # cipher text
         hmac_digest = ciphertext[-SHA512.digest_size:]
@@ -892,10 +842,7 @@ class CryptData(object):
         return ciphertext
 
     def _get_hmac_digest(self, data: bytes, key: bytes) -> bytes:
-        """ Returns the hmac digest of data using key.
-
-        """
-
+        """Return the hmac digest of data using key."""
         # Re-generate the hmac digest of cipher text.
         hmac = HMAC(key, SHA512)
         hmac.update(data)
@@ -903,10 +850,7 @@ class CryptData(object):
         return hmac.digest()
 
     def encrypt(self, plaintext: str) -> bytes:
-        """ encrypt(key, plaintext) ->  Encrypts the plain text using key.
-
-        """
-
+        """Encrypt the plain text using key."""
         # Pad the plain text.
         padded_plaintext = PKCS7_pad(plaintext.encode(), AES.block_size())
 
@@ -924,10 +868,7 @@ class CryptData(object):
         return ciphertext + self._encrypt(hmac_key, self._key) + hmac_digest
 
     def decrypt(self, ciphertext: bytes) -> str:
-        """ decrypt(key, ciphertext) -> Decrypts the cipher text using the key.
-
-        """
-
+        """Decrypt the cipher text using the key."""
         try:
             ciphertext = self._verify(ciphertext)
         except AssertionError:
@@ -941,7 +882,7 @@ class CryptData(object):
 
 
 class PassFile(object):
-    """ An encrypted password file.
+    r"""An encrypted password file.
 
     The format is a dictionary where the master key is stored under the key
     '\x00master_key\x00' and each account name is hashed and used as the key to
@@ -950,20 +891,20 @@ class PassFile(object):
     account info. So it is like this.
     {
         hashed(\x00master_key\x00): salt+iv+encrypted_master_key,
-        hashed(account_name): iv+encrypted_account_dict+encrypted_hmac_key+hmac_digest,
+        hashed(account_name): iv
+                              +encrypted_account_dict
+                              +encrypted_hmac_key
+                              +hmac_digest,
         ...
     }
-
     """
 
-
     def __init__(self, filename: str, password: str = '',
-                 pass_func: object = get_pass):
-        """ Open the filename and read out the data.  Decrypt it and allow
-        access.
+                 pass_func: Callable = get_pass):
+        """Open the filename and read out the data.
 
+        Decrypt the file and allow access.
         """
-
         self._filename = filename
         self._ask_pass = pass_func
 
@@ -972,12 +913,13 @@ class PassFile(object):
         cryptdata, accounts_dict = self._read_file(filename, password)
         self._cryptdata, self._accounts_dict = cryptdata, accounts_dict
 
-    def _read_file(self, filename: str, password: str = '') -> dict:
-        """ Reads the data from filename and returns the account dictionary,
-        the encrypted master key, and the decrypted master key.
+    def _read_file(self, filename: str,
+                   password: str = '') -> tuple[Any, dict]:
+        """Read file.
 
+        Reads the data from filename and returns the account dictionary, the
+        encrypted master key, and the decrypted master key.
         """
-
         # Read from the file if it exists.
         with pathlib_path(filename) as pass_file:
             lzma_data = pass_file.read_bytes() if pass_file.is_file() else b''
@@ -1007,12 +949,9 @@ class PassFile(object):
 
         return CryptData(password, encrypted_key), accounts_dict
 
-    def _write_file(self, filename: str, accounts_dict: dict, 
+    def _write_file(self, filename: str, accounts_dict: dict,
                     encrypted_key: bytes):
-        """ Compresses and writes the accounts_dict to the file at filename.
-
-        """
-
+        """Compresse and writes the accounts_dict to the file at filename."""
         # Put the master key into the accounts dict.
         accounts_dict[self.MASTER_KEY_DIGEST] = encrypted_key.hex()
 
@@ -1023,22 +962,19 @@ class PassFile(object):
         with pathlib_path(filename) as pass_file:
             pass_file.write_bytes(lzma_data)
 
-    def _hash_name(self, name: str) -> bytes:
-        """ Hashes name and returns the result.
-
-        """
-
+    def _hash_name(self, name: str) -> str:
+        """Hashes name and returns the result."""
         return SHA512.digest(name.encode()).hex()
 
     def _crypt_to_dict(self, crypt_data: str) -> dict:
-        """ Decrypts crypt_data and returns the json.loads dictionary.
+        """Decrypts crypt_data and returns the json.loads dictionary.
+
         If skip_invalid is True then skip decryption of data if the password is
         invalid.
-
         """
-
         # Return an empty dictionary if crypt_data is empty.
-        if not crypt_data: return {}
+        if not crypt_data:
+            return {}
 
         # Convert the data to a bytes object and decrypt it.
         json_data = self._cryptdata.decrypt(bytes.fromhex(crypt_data))
@@ -1047,13 +983,9 @@ class PassFile(object):
         # dictionary.
         return json_loads(json_data)
 
-
     def _dict_to_crypt(self, data_dict: dict) -> str:
-        """ Returns the encrypted json dump of data_dict.
-
-        """
-
-        # Dump the data_dict into json data.  
+        """Return the encrypted json dump of data_dict."""
+        # Dump the data_dict into json data.
         json_data = '{}' if not data_dict else json_dumps(data_dict)
 
         ciphertext = self._cryptdata.encrypt(json_data)
@@ -1062,10 +994,7 @@ class PassFile(object):
         return ciphertext.hex()
 
     def get(self, account: str, default: dict = {}) -> dict:
-        """ Return the value from accounts_dict associated with key.
-
-        """
-
+        """Return the value from accounts_dict associated with key."""
         account_hash = self._hash_name(account)
 
         if account_hash not in self._accounts_dict:
@@ -1074,55 +1003,46 @@ class PassFile(object):
         return self._crypt_to_dict(self._accounts_dict[account_hash])
 
     def set(self, account: str, value: dict):
-        """ Set the value associated with key.
-
-        """
-
+        """Set the value associated with key."""
         account_hash = self._hash_name(account)
         self._accounts_dict[account_hash] = self._dict_to_crypt(value)
 
-    def accounts(self) -> iter:
-        """ Iterate through all the items in _accounts_dict, and yield
-        the account dictionaries.
+    def accounts(self) -> Generator[dict, None, None]:
+        """Create a Generator of account dictionaries.
 
+        Iterate through all the items in _accounts_dict, and yield the account
+        dictionaries.
         """
-
         for i in self._accounts_dict.values():
             yield self._crypt_to_dict(i)
 
-    def account_names(self) -> iter:
-        """ Iterate through all the items in _accounts_dict, and yield
-        the account names.
+    def account_names(self) -> Generator[str, None, None]:
+        """Create a generator of account names.
 
+        Iterate through all the items in _accounts_dict, and yield the account
+        names.
         """
-
         for i in self._accounts_dict.values():
             yield self._crypt_to_dict(i)['Account Name']
 
     def change_pass(self, new_password: str):
-        """ Change the password used to encrypt the master_key.
-
-        """
-
+        """Change the password used to encrypt the master_key."""
         self._cryptdata.password = new_password
 
     def remove(self, item: str):
-        """ Remove the entry at item.
-
-        """
-
+        """Remove the entry at item."""
         self._accounts_dict.pop(self._hash_name(item))
 
     def convert(self):
-        """ Convert to latest format.
-
-        """
-
+        """Convert to latest format."""
         tmp_accounts_dict = {}
-        for account_hash, account_data in self._accounts_dict.items():
-            account_dict = crypt_to_dict_sha256(account_data,
-                                                password=self._cryptdata.password,
-                                                skip_invalid=True)
+        # account_hash, account_data
+        for _, account_data in self._accounts_dict.items():
+            account_dict = crypt_to_dict_sha256(
+                account_data,
+                password=self._cryptdata.password,
+                skip_invalid=True
+            )
             if account_dict:
                 new_account_data = self._dict_to_crypt(account_dict)
             else:
@@ -1133,28 +1053,15 @@ class PassFile(object):
         self._accounts_dict = tmp_accounts_dict
 
     def __contains__(self, item: str) -> bool:
-        """ Checks if accounts_dict has a key of value item.
-
-        """
-
+        """Check if accounts_dict has a key of value item."""
         return self._hash_name(item) in self._accounts_dict
 
-    def __enter__(self):
-        """ Provides the ability to use pythons with statement.
+    def __enter__(self) -> "PassFile":
+        """Provide the ability to use pythons with statement."""
+        return self
 
-        """
-
-        try:
-            return self
-        except Exception as err:
-            print(err)
-            return None
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        """ Close the file when finished.
-
-        """
-
+    def __exit__(self, exc_type, *_) -> bool:
+        """Close the file when finished."""
         try:
             self._write_file(self._filename, self._accounts_dict,
                              self._cryptdata.encrypted_key)
@@ -1165,11 +1072,11 @@ class PassFile(object):
 
 
 def dict_to_str(data_dict: dict) -> str:
-    """ Returns a formatted string of the (key, value) items in the supplied
+    """Convert a dictionary to a string.
+
+    Returns a formatted string of the (key, value) items in the supplied
     dictionary.
-
     """
-
     str_list = ['\n']
 
     max_key_len = max(len(key) for key in data_dict.keys())
@@ -1189,12 +1096,12 @@ def dict_to_str(data_dict: dict) -> str:
     return '\n'.join(str_list)
 
 
-def convert(args: object) -> int:
-    """ Convert from SHA256 hashed key to using a master key and encrypting the
+def convert(args: Any) -> int:
+    """Convert hashed data.
+
+    Convert from SHA256 hashed key to using a master key and encrypting the
     master key with a password based key.
-
     """
-
     filename = args.filename
     password = get_pass('password', verify=False)
 
@@ -1206,11 +1113,8 @@ def convert(args: object) -> int:
     return 0
 
 
-def search(args: object) -> int:
-    """ Search for search_term in filename.
-
-    """
-
+def search(args: Any) -> int:
+    """Search for search_term in filename."""
     filename = args.filename
     search_term = args.search_term
     search_key = 'Account Name' if args.accounts else args.search_key
@@ -1224,8 +1128,9 @@ def search(args: object) -> int:
         for account_dict in passfile.accounts():
             # The string representation of a dict is good enough for
             # searching in.
-            if search_str in str(account_dict.get(search_key,
-                                                  '' if search_key else account_dict)):
+            if (search_str in
+                    str(account_dict.get(search_key,
+                                         '' if search_key else account_dict))):
                 account_str += f'\n{dict_to_str(account_dict)}'
 
     import pydoc
@@ -1234,11 +1139,8 @@ def search(args: object) -> int:
     return 0
 
 
-def change_password(args: object) -> int:
-    """ Change the password that encrypts the master key.
-
-    """
-
+def change_password(args: Any) -> int:
+    """Change the password that encrypts the master key."""
     filename = args.filename
 
     with PassFile(filename) as passfile:
@@ -1249,11 +1151,8 @@ def change_password(args: object) -> int:
     return 0
 
 
-def remove_account(args: object) -> int:
-    """ Remove account from filename.
-
-    """
-
+def remove_account(args: Any) -> int:
+    """Remove account from filename."""
     filename = args.filename
     account = args.account
 
@@ -1263,11 +1162,8 @@ def remove_account(args: object) -> int:
     return 0
 
 
-def add_account(args: object) -> int:
-    """ Add an account the file.
-
-    """
-
+def add_account(args: Any) -> int:
+    """Add an account the file."""
     filename = args.filename
     account = args.account
 
@@ -1304,7 +1200,8 @@ def add_account(args: object) -> int:
                 key, value = i.split(args.separator)
 
                 # Don't allow the user to set the account name this way.
-                if key.lower() == 'account name': continue
+                if key.lower() == 'account name':
+                    continue
 
                 # Remove empty values from the account dict and continue.
                 if not value:
@@ -1322,15 +1219,13 @@ def add_account(args: object) -> int:
 
     return 0
 
+
 # Use the add function to change.
 modify_account = add_account
 
 
-def rehash(args: object) -> int:
-    """ Re-hash all the account info.
-
-    """
-
+def rehash(args: Any) -> int:
+    """Re-hash all the account info."""
     filename = args.filename
 
     with PassFile(filename) as passfile:
@@ -1347,11 +1242,8 @@ def rehash(args: object) -> int:
     return 0
 
 
-def list_info(args: object) -> int:
-    """ List the info in the account or file.
-
-    """
-
+def list_info(args: Any) -> int:
+    """List the info in the account or file."""
     filename = args.filename
     account = args.account
 
@@ -1376,17 +1268,15 @@ def list_info(args: object) -> int:
     return 0
 
 
-def rename_account(args: object) -> int:
-    """ Rename an account.
-
-    """
-
+def rename_account(args: Any) -> int:
+    """Rename an account."""
     filename = args.filename
     old_account = args.old_account
     new_account = args.new_account
 
     # Do nothing if the names are the same.
-    if old_account == new_account: return 0
+    if old_account == new_account:
+        return 0
     # Account names cannot be 'ALL.'
     if old_account == 'ALL' or new_account == 'ALL':
         print("Invalid account name: 'ALL'")
@@ -1408,14 +1298,10 @@ def rename_account(args: object) -> int:
     return 0
 
 
-def diff(args: object) -> int:
-    """ List the differences between two files.
-
-    """
-
-    from difflib import unified_diff
-    from difflib import ndiff
+def diff(args: Any) -> int:
+    """List the differences between two files."""
     import pydoc
+    from difflib import unified_diff
 
     first_filename = args.first_file
     second_filename = args.second_file
@@ -1457,17 +1343,16 @@ if __name__ == '__main__':
     # Add account options
     add_group = subparsers.add_parser('add', help='Add an account.')
     add_group.add_argument('account', action='store',
-                            help='The name of the account to add.')
+                           help='The name of the account to add.')
     add_sub = add_group.add_subparsers(help='Specify the file.', dest='to')
     add_sub.required = True
-    add_sub_group = add_sub.add_parser('to',
-                                       help='The file where the account \
-                                             should be added.')
+    add_sub_group = add_sub.add_parser('to', help="The file where the account "
+                                       "should be added.")
     add_sub_group.add_argument('filename')
-    file_sub = add_sub_group.add_subparsers(help='Set info=data (e.g. set \
-                                            username=bif)', dest='set')
+    file_sub = add_sub_group.add_subparsers(help="Set info=data (e.g. set "
+                                            "username=bif)", dest='set')
     file_sub_group = file_sub.add_parser('set', help='Set item info.')
-    file_sub_group.add_argument('-s', '--separator', action='store', 
+    file_sub_group.add_argument('-s', '--separator', action='store',
                                 default='=',
                                 help='Set the info separator (default is "=")')
     file_sub_group.add_argument('data', nargs="+",
@@ -1476,28 +1361,28 @@ if __name__ == '__main__':
     add_group.set_defaults(func=add_account)
 
     # Change options.
-    modify_group = subparsers.add_parser('modify',
-                                         help='Change the file password, or \
-                                               the info in an account.')
-    modify_group.add_argument('account', action='store',
-                              help='The name of the account to modify, \
-                                    or "PASSWORD" to change the password.')
+    modify_group = subparsers.add_parser('modify', help="Change the file "
+                                         "password, or the info in an "
+                                         "account.")
+    modify_group.add_argument('account', action='store', help='The name of '
+                              'the account to modify, or "PASSWORD" to change '
+                              'the password.')
     modify_sub = modify_group.add_subparsers(help='File to modify.',
                                              dest='in')
     modify_sub.required = True
-    modify_sub_group = modify_sub.add_parser('in', help='Specify what file to \
-                                                         modify.')
+    modify_sub_group = modify_sub.add_parser('in', help="Specify what file "
+                                             "to modify.")
     modify_sub_group.add_argument('filename')
     file_sub = modify_sub_group.add_subparsers(help='Set item info.',
                                                dest='set')
-    file_sub_group = file_sub.add_parser('set', help='Set info=data (e.g. set \
-                                                     username=bif)')
-    file_sub_group.add_argument('-s', '--separator', action='store', 
+    file_sub_group = file_sub.add_parser('set', help="Set info=data (e.g. set"
+                                         " username=bif)")
+    file_sub_group.add_argument('-s', '--separator', action='store',
                                 default='=',
                                 help='Set the info separator (default is "=")')
     file_sub_group.add_argument('data', nargs="+",
-                                help='Use {secret} to input secrets e.g. \
-                                      (Question={secret})')
+                                help="Use {secret} to input secrets e.g."
+                                " (Question={secret})")
     modify_group.set_defaults(func=modify_account)
 
     # Rename options
@@ -1505,8 +1390,8 @@ if __name__ == '__main__':
                                          help='Rename an account.')
     rename_group.add_argument('old_account', action='store',
                               help='The name of the account to rename.')
-    rename_sub = rename_group.add_subparsers(help='The file with the account \
-                                                   to rename.', dest='in')
+    rename_sub = rename_group.add_subparsers(
+        help='The file with the account to rename.', dest='in')
     rename_sub.required = True
     rename_sub_group = rename_sub.add_parser('in', help='Specify the file.')
     rename_sub_group.add_argument('filename')
@@ -1522,33 +1407,29 @@ if __name__ == '__main__':
     remove_group.add_argument('account', action='store',
                               help='The account to remove.')
     remove_sub = remove_group.add_subparsers(dest='from',
-                                             help='The file from which the \
-                                                   account should be removed.')
+                                             help="The file from which the "
+                                             "account should be removed.")
     remove_sub.required = True
     remove_sub_group = remove_sub.add_parser('from', help="filename")
     remove_sub_group.add_argument('filename')
     remove_group.set_defaults(func=remove_account)
 
-    convert_group = subparsers.add_parser('convert', help='Convert from old \
-                                           SHA256 format the new format.')
+    convert_group = subparsers.add_parser('convert', help="Convert from old "
+                                          "SHA256 format the new format.")
     convert_group.add_argument('filename')
     convert_group.set_defaults(func=convert)
 
-    rehash_group = subparsers.add_parser('rehash', help='Re-hash all the \
-                                                         account info.')
+    rehash_group = subparsers.add_parser('rehash', help="Re-hash all the"
+                                         " account info.")
     rehash_group.add_argument('filename')
     rehash_group.set_defaults(func=rehash)
 
-
     # List options
-    list_group = subparsers.add_parser('list', help='List all info for an \
-                                                     account')
-    list_group.add_argument('account', action='store', help='What account to \
-                                                             list the info \
-                                                             of.  Use "ALL" \
-                                                             to list all the \
-                                                             info in the \
-                                                             file.')
+    list_group = subparsers.add_parser('list',
+                                       help='List all info for an account')
+    list_group.add_argument('account', action='store',
+                            help='What account to list the info of.  '
+                            'Use "ALL" to list all the info in the file.')
     list_sub = list_group.add_subparsers(help='Specify the file.', dest='in')
     list_sub.required = True
     list_sub_group = list_sub.add_parser('in', help="filename")
@@ -1573,8 +1454,8 @@ if __name__ == '__main__':
 
     # Diff options
     diff_group = subparsers.add_parser('diff',
-                                       help='List the differences between two \
-                                             files.')
+                                       help='List the differences between two '
+                                            'files.')
     diff_group.add_argument('first_file', action='store',
                             help='First file')
     diff_sub = diff_group.add_subparsers(help='Second file',
@@ -1589,6 +1470,7 @@ if __name__ == '__main__':
         func = args.func
     except AttributeError:
         parser.parse_args(['--help'])
+        func = print
 
     try:
         _init_gcrypt()
