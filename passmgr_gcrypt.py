@@ -1084,7 +1084,14 @@ def dict_to_str(data_dict: dict) -> str:
     for key, value in data_dict.items():
         # Format the info in a list as follows:
         # key (right align by space max_key_len): value
-        line_str = f"{key.lower().title():<{max_key_len}} -> {value}"
+        key_code = '0;37'
+        value_code = '0;37'
+        value_code = '1;37' if 'password' == key.lower() else value_code
+        value_code = '1;37' if 'username' == key.lower() else value_code
+        # value_code = '0;37' if 'account name' in key.lower() else value_code
+        # value_code = '0;37' if 'email' in key.lower() else value_code
+        line_str = (f"\033[{key_code}m{key.lower().title():<{max_key_len}}"
+                    f"\033[0;34m -> \033[{value_code}m{value}\033[0m")
 
         # Put the account name first in the list.
         if key == 'Account Name':
@@ -1133,8 +1140,11 @@ def search(args: Any) -> int:
                                          '' if search_key else account_dict))):
                 account_str += f'\n{dict_to_str(account_dict)}'
 
-    import pydoc
-    pydoc.pager(account_str)
+    if account_str:
+        import pydoc
+        pydoc.pager(account_str)
+    else:
+        print(f"No results found for '{args.search_term}' in {args.filename}")
 
     return 0
 
