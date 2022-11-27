@@ -920,9 +920,11 @@ class PassFile(object):
         Reads the data from filename and returns the account dictionary, the
         encrypted master key, and the decrypted master key.
         """
+        lzma_data = b''
+
         # Read from the file if it exists.
-        with pathlib_path(filename) as pass_file:
-            lzma_data = pass_file.read_bytes() if pass_file.is_file() else b''
+        if (pass_file := pathlib_path(filename)).is_file():
+            lzma_data = pass_file.read_bytes()
 
         # Get the json data out of the file data or an empty json dict of
         # the file was empty.
@@ -959,8 +961,8 @@ class PassFile(object):
 
         lzma_data = lzma_compress(json_data.encode())
 
-        with pathlib_path(filename) as pass_file:
-            pass_file.write_bytes(lzma_data)
+        # Write lzma_data to the password file.
+        pathlib_path(filename).write_bytes(lzma_data)
 
     def _hash_name(self, name: str) -> str:
         """Hashes name and returns the result."""
